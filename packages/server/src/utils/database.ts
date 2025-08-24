@@ -117,6 +117,7 @@ export async function ensureSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS grids (
       id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      public_id VARCHAR(32) UNIQUE NULL,
       owner_id BIGINT NOT NULL,
       title VARCHAR(255) NOT NULL,
       last_modified TIMESTAMP NULL DEFAULT NULL,
@@ -158,6 +159,7 @@ export async function ensureSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS grid_sheets (
       id BIGINT PRIMARY KEY AUTO_INCREMENT,
       grid_id BIGINT NOT NULL,
+      public_id VARCHAR(32) UNIQUE NULL,
       name VARCHAR(255) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY unique_sheet_name (grid_id, name),
@@ -172,6 +174,20 @@ export async function ensureSchema(): Promise<void> {
   } catch (e) {
     // ignore if already applied
   }
+  // add public_id columns if missing
+  try {
+    await db.query("ALTER TABLE grids ADD COLUMN public_id VARCHAR(32) UNIQUE NULL");
+  } catch (e) {}
+  try {
+    await db.query("ALTER TABLE grid_sheets ADD COLUMN public_id VARCHAR(32) UNIQUE NULL");
+  } catch (e) {}
+  // backfill public ids if missing
+  try {
+    await db.execute("UPDATE grids SET public_id = SUBSTRING(REPLACE(UUID(),'-',''),1,16) WHERE public_id IS NULL");
+  } catch (e) {}
+  try {
+    await db.execute("UPDATE grid_sheets SET public_id = SUBSTRING(REPLACE(UUID(),'-',''),1,16) WHERE public_id IS NULL");
+  } catch (e) {}
   try {
     await db.query("ALTER TABLE grid_cells ADD COLUMN style TEXT NULL");
   } catch (e) {

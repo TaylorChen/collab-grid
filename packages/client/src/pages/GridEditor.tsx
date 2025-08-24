@@ -13,7 +13,7 @@ export default function GridEditor() {
   const user = useUserStore((s) => s.user);
   const [title, setTitle] = React.useState<string>("Loading...");
   const [ownerId, setOwnerId] = React.useState<number | null>(null);
-  const [sheets, setSheets] = React.useState<Array<{ id: number; name: string }>>([]);
+  const [sheets, setSheets] = React.useState<Array<{ id: number; public_id?: string; name: string }>>([]);
   const [currentSheet, setCurrentSheet] = React.useState<number>(0);
   const [email, setEmail] = React.useState("");
   const [msg, setMsg] = React.useState<string | null>(null);
@@ -74,12 +74,13 @@ export default function GridEditor() {
             <button className="text-xs text-gray-600" onClick={async () => {
               const name = prompt("重命名 sheet", s.name) || s.name;
               if (!token || !id || !name.trim()) return;
-              const res: any = await api.renameSheet(token, id, s.id, name.trim());
+              const res: any = await api.renameSheet(token, id, s.public_id || s.id, name.trim());
               if (res?.success) setSheets(res.data);
             }}>✎</button>
             <button className="text-red-600" onClick={async () => {
               if (!token || !id) return;
-              await api.deleteSheet(token, id, s.id);
+              if (sheets.length <= 1) { alert("至少保留一个 Sheet，不能删除最后一个"); return; }
+              await api.deleteSheet(token, id, s.public_id || s.id);
               const res: any = await api.listSheets(token, id);
               if (res?.success) {
                 setSheets(res.data);

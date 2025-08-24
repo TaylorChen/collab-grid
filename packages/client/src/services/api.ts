@@ -27,15 +27,15 @@ export const api = {
     request(`/api/grids/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
   renameGrid: (token: string, id: number | string, title: string) =>
     request(`/api/grids/${id}`, { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ title }) }),
-  getGrid: (token: string, id: number | string) =>
-    request(`/api/grids/${id}`, { headers: { Authorization: `Bearer ${token}` } }),
-  listSheets: (token: string, id: number | string) =>
-    request(`/api/grids/${id}/sheets`, { headers: { Authorization: `Bearer ${token}` } }),
-  createSheet: (token: string, id: number | string, name: string) =>
-    request(`/api/grids/${id}/sheets`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name }) }),
-  deleteSheet: (token: string, id: number | string, sheetId: number) =>
-    request(`/api/grids/${id}/sheets/${sheetId}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-  renameSheet: (token: string, id: number | string, sheetId: number, name: string) =>
-    request(`/api/grids/${id}/sheets/${sheetId}`, { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
+  getGrid: (token: string, gridKey: number | string) =>
+    request(`/api/grids/${gridKey}`, { headers: { Authorization: `Bearer ${token}` } }),
+  listSheets: (token: string, gridKey: number | string) =>
+    request(`/api/grids/${gridKey}/sheets`, { headers: { Authorization: `Bearer ${token}` } }),
+  createSheet: (token: string, gridKey: number | string, name: string) =>
+    request(`/api/grids/${gridKey}/sheets`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name }) }),
+  deleteSheet: (token: string, gridKey: number | string, sheetKey: number | string) =>
+    request(`/api/grids/${gridKey}/sheets/${sheetKey}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+  renameSheet: (token: string, gridKey: number | string, sheetKey: number | string, name: string) =>
+    request(`/api/grids/${gridKey}/sheets/${sheetKey}`, { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name }) })
 };
 

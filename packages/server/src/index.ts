@@ -83,18 +83,26 @@ async function bootstrap() {
     }
 
     socket.on("grid:join", async ({ gridId, sheetId }) => {
-      socket.join(gridId);
+      const room = String(gridId);
+      socket.join(room);
       try {
         const { db } = await import("./utils/database");
+        // resolve numeric grid id for DB queries
+        let numericGridId: number = 0;
+        if (/^\d+$/.test(String(gridId))) numericGridId = Number(gridId);
+        else {
+          const [gidRows] = await db.query<any[]>("SELECT id FROM grids WHERE public_id=? LIMIT 1", [String(gridId)]);
+          numericGridId = (gidRows as any[])?.[0]?.id ?? 0;
+        }
         // fallback: if invalid sheetId, use first sheet of the grid (or 0)
         let effectiveSheetId = sheetId;
         if (typeof effectiveSheetId !== 'number' || !Number.isFinite(effectiveSheetId) || effectiveSheetId <= 0) {
-          const [ss] = await db.query<any[]>("SELECT id FROM grid_sheets WHERE grid_id=? ORDER BY id ASC LIMIT 1", [gridId]);
+          const [ss] = await db.query<any[]>("SELECT id FROM grid_sheets WHERE grid_id=? ORDER BY id ASC LIMIT 1", [numericGridId || gridId]);
           if ((ss as any[])?.[0]?.id) effectiveSheetId = (ss as any[])[0].id;
           else effectiveSheetId = 0;
         }
 
-        const params: any[] = [gridId];
+        const params: any[] = [numericGridId || gridId];
         let sql = "SELECT row_index AS `row`, col_index AS `col`, value, style FROM grid_cells WHERE grid_id=?";
         if (effectiveSheetId > 0) {
           sql += " AND sheet_id=?";
@@ -117,27 +125,37 @@ async function bootstrap() {
             colWidths = lay.col_widths ? (()=>{ try { return JSON.parse(lay.col_widths); } catch { return undefined; } })() : undefined;
           }
         }
-        socket.emit("grid:snapshot", { id: gridId, rows, cols, rowHeights, colWidths, cells: cellsParsed });
+        socket.emit("grid:snapshot", { id: room, rows, cols, rowHeights, colWidths, cells: cellsParsed });
       } catch {
-        socket.emit("grid:snapshot", { id: gridId, rows: 100, cols: 26, cells: [] });
+        socket.emit("grid:snapshot", { id: room, rows: 100, cols: 26, cells: [] });
       }
     });
 
     socket.on("grid:operation", async (op) => {
       const { gridId } = op || {};
       if (gridId) {
+        // resolve numeric grid id for DB operations
+        let numericGridId: number = 0;
+        try {
+          const { db } = await import('./utils/database');
+          if (/^\d+$/.test(String(gridId))) numericGridId = Number(gridId);
+          else {
+            const [gidRows] = await db.query<any[]>("SELECT id FROM grids WHERE public_id=? LIMIT 1", [String(gridId)]);
+            numericGridId = (gidRows as any[])?.[0]?.id ?? 0;
+          }
+        } catch {}
         // normalize sheetId (fallback to first sheet if invalid/missing)
         let normalizedSheetId = typeof op?.sheetId === 'number' ? op.sheetId : 0;
         if (!(normalizedSheetId > 0)) {
           try {
             const { db } = await import('./utils/database');
-            const [ss] = await db.query<any[]>("SELECT id FROM grid_sheets WHERE grid_id=? ORDER BY id ASC LIMIT 1", [gridId]);
+            const [ss] = await db.query<any[]>("SELECT id FROM grid_sheets WHERE grid_id=? ORDER BY id ASC LIMIT 1", [numericGridId || gridId]);
             if ((ss as any[])?.[0]?.id) normalizedSheetId = (ss as any[])[0].id;
           } catch {}
         }
         (op as any).sheetId = normalizedSheetId;
         // broadcast first (with normalized sheetId)
-        socket.to(gridId).emit("grid:operation", op);
+        socket.to(String(gridId)).emit("grid:operation", op);
         // dimension/resize persistence per sheet
         if (op?.type === "grid:dimension" || op?.type === "grid:resize") {
           try {
@@ -183,7 +201,7 @@ async function bootstrap() {
                    style=COALESCE(VALUES(style), style),
                    updated_by=VALUES(updated_by),
                    updated_at=NOW()`,
-                [gridId, sheetId, row, col, value ?? null, styleJson, userId]
+                [numericGridId || gridId, sheetId, row, col, value ?? null, styleJson, userId]
               );
             } else {
               // cell:style 仅更新样式，值保持不变
@@ -195,13 +213,13 @@ async function bootstrap() {
                    style=VALUES(style),
                    updated_by=VALUES(updated_by),
                    updated_at=NOW()`,
-                [gridId, sheetId, row, col, null, styleJson, userId]
+                [numericGridId || gridId, sheetId, row, col, null, styleJson, userId]
               );
             }
             // update grids.last_modified, last_editor_id
             await (await import("./utils/database")).db.execute(
               `UPDATE grids SET last_modified=NOW(), last_editor_id=? WHERE id=?`,
-              [userId, gridId]
+              [userId, numericGridId || gridId]
             );
           } catch {}
         }

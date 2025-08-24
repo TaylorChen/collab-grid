@@ -36,7 +36,7 @@ export default function Grids() {
         // 跳转到新建表格
         try {
           if (res.data?.id) {
-            window.location.href = `/grid/${res.data.id}`;
+            window.location.href = `/grid/${res.data.public_id || res.data.id}`;
           }
         } catch {}
       } else {
@@ -66,7 +66,7 @@ export default function Grids() {
               <div className="text-gray-500 text-sm">#{g.id} · 创建: {new Date(g.created_at).toLocaleString()} · 最近: {g.last_modified ? new Date(g.last_modified).toLocaleString() : "-"} · 最近编辑: {g.last_editor || "-"}</div>
             </div>
             <div className="flex gap-3 items-center">
-              <a className="text-blue-600" href={`/grid/${g.id}`}>打开</a>
+              <a className="text-blue-600" href={`/grid/${g.public_id || g.id}`}>打开</a>
               {g.is_owner ? (
                 <button className="text-red-600" onClick={async () => {
                   if (!token) return;
