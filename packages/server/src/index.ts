@@ -60,6 +60,15 @@ async function bootstrap() {
         const jwt = (await import("jsonwebtoken")).default as any;
         const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
         const user = jwt.verify(token, JWT_SECRET);
+        // Single-login: verify token matches latest
+        try {
+          const { getRedis } = await import("./utils/redis");
+          const r = await getRedis();
+          const last = await r?.get(`user:${user.id}:lastToken`);
+          if (last && last !== token) {
+            return next(new Error("unauthorized: session expired"));
+          }
+        } catch {}
         (socket.data as any).user = user;
       }
     } catch {}

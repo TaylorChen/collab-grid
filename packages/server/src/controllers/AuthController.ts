@@ -3,12 +3,31 @@ import { db } from "../utils/database";
 import bcrypt from "bcryptjs";
 import { signToken, type AuthUser } from "../middleware/auth.middleware";
 import { authRequired } from "../middleware/auth.middleware";
+import { getRedis } from "../utils/redis";
 
 export const AuthController = Router();
 
 AuthController.post("/register", async (req, res) => {
   const { email, password, displayName } = req.body || {};
   if (!email || !password || !displayName) return res.status(400).json({ success: false, error: "Invalid body" });
+  // password strength validation
+  const localPart = String(email || "").split("@")[0] || "";
+  const pwd = String(password || "");
+  const name = String(displayName || "");
+  const tooShort = pwd.length < 8 || pwd.length > 128;
+  const hasLower = /[a-z]/.test(pwd);
+  const hasUpper = /[A-Z]/.test(pwd);
+  const hasDigit = /\d/.test(pwd);
+  const hasSymbol = /[^\w\s]/.test(pwd);
+  const hasSpace = /\s/.test(pwd);
+  const containsName = name && pwd.toLowerCase().includes(name.toLowerCase());
+  const containsLocal = localPart && pwd.toLowerCase().includes(localPart.toLowerCase());
+  if (tooShort || hasSpace || !hasLower || !hasUpper || !hasDigit || !hasSymbol || containsName || containsLocal) {
+    return res.status(400).json({
+      success: false,
+      error: "Weak password: min 8 chars, include upper, lower, digit, symbol; no spaces; cannot contain display name or email name"
+    });
+  }
   const hash = await bcrypt.hash(password, 10);
   try {
     const [result] = await db.execute<unknown & { insertId: number }>(
@@ -35,6 +54,11 @@ AuthController.post("/login", async (req, res) => {
   if (!ok) return res.status(401).json({ success: false, error: "Invalid credentials" });
   const user: AuthUser = { id: row.id, email: row.email, displayName: row.display_name };
   const token = signToken(user);
+  // SSO: store last token for user
+  try {
+    const r = await getRedis();
+    await r?.set(`user:${user.id}:lastToken`, token, { EX: 7 * 24 * 3600 });
+  } catch {}
   return res.json({ success: true, data: { token, user } });
 });
 

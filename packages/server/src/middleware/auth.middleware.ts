@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { getRedis } from "../utils/redis";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
@@ -29,7 +30,17 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
   try {
     const payload = jwt.verify(token, JWT_SECRET) as AuthUser;
     req.user = payload;
-    next();
+    // Enforce single-session (latest token only)
+    (async () => {
+      try {
+        const r = await getRedis();
+        const last = await r?.get(`user:${payload.id}:lastToken`);
+        if (last && last !== token) {
+          return res.status(401).json({ success: false, error: "Session expired (single login enforced)" });
+        }
+      } catch {}
+      next();
+    })();
   } catch {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
