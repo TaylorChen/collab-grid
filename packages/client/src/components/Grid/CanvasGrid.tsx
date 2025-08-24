@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useGridStore } from "@/stores/gridStore";
 import { getWS } from "@/services/websocket";
 import { useUserStore } from "@/stores/userStore";
+import { useRealtimeStore } from "@/stores/realtimeStore";
 
 const CELL_W = 80;
 const CELL_H = 24;
@@ -20,6 +21,11 @@ export default function CanvasGrid({ gridId = "demo", sheetId = 0 }: { gridId?: 
   const setCell = useGridStore((s) => s.setCell);
   const [editing, setEditing] = useState<{ row: number; col: number; value: string } | null>(null);
   const actorId = useUserStore((s) => s.user?.id);
+  const lockByCell = useRealtimeStore((s) => s.lockByCell);
+  const lockTokenRef = useRef<string | null>(null);
+  const renewTimerRef = useRef<any>(null);
+  const [notice, setNotice] = useState<{ left: number; top: number; text: string } | null>(null);
+  const noticeTimerRef = useRef<any>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -73,7 +79,7 @@ export default function CanvasGrid({ gridId = "demo", sheetId = 0 }: { gridId?: 
       xAcc += c < cols ? (colWidths[c] ?? CELL_W) : 0;
     }
 
-    // 3) values
+    // 3) values (support multi-line by splitting on \n)
     ctx.textBaseline = 'middle';
     for (const key in cells) {
       const [r, c] = key.split(":").map(Number);
@@ -88,12 +94,18 @@ export default function CanvasGrid({ gridId = "demo", sheetId = 0 }: { gridId?: 
       const size = style.fontSize || 12;
       ctx.font = `${style.bold ? "bold " : ""}${size}px system-ui, -apple-system, Segoe UI, Roboto`;
       ctx.fillStyle = style.color || "#111827";
-      let textX = cellLeft2 + 6;
-      const textW = ctx.measureText(v).width;
-      if (style.align === "center") textX = cellLeft2 + cw / 2 - textW / 2;
-      if (style.align === "right") textX = cellLeft2 + cw - 6 - textW;
-      const textY = cellTop2 + ch / 2;
-      ctx.fillText(v, textX, textY);
+      const lines = v.split("\n");
+      const lineH = (Math.max(12, size)) * 1.2;
+      const centerY = cellTop2 + ch / 2;
+      for (let i = 0; i < lines.length; i++) {
+        const t = lines[i];
+        const w = ctx.measureText(t).width;
+        let tx = cellLeft2 + 6;
+        if (style.align === "center") tx = cellLeft2 + cw / 2 - w / 2;
+        if (style.align === "right") tx = cellLeft2 + cw - 6 - w;
+        const ty = centerY + (i - (lines.length - 1) / 2) * lineH;
+        ctx.fillText(t, tx, ty);
+      }
     }
   }, [rows, cols, cells, styles, rowHeights, colWidths]);
 
@@ -107,9 +119,57 @@ export default function CanvasGrid({ gridId = "demo", sheetId = 0 }: { gridId?: 
     let row = 0, sumY = 0;
     while (row < rows && sumY + (rowHeights[row] ?? CELL_H) < y) { sumY += (rowHeights[row] ?? CELL_H); row++; }
     const key = `${row}:${col}`;
+    const cellKey = `${sheetId}:${row}:${col}`;
     const current = cells[key];
-    setEditing({ row, col, value: String(current ?? "") });
     setActive(row, col);
+    // 软提示
+    getWS()?.emit('cell:focus', { gridId, sheetId, row, col });
+    // 若已被占用，给出提示
+    const holder = lockByCell[cellKey];
+    if (holder) {
+      // 气泡提示，非阻塞
+      let left = 0; for (let i = 0; i < col; i++) left += (colWidths[i] ?? CELL_W);
+      let top = 0; for (let i = 0; i < row; i++) top += (rowHeights[i] ?? CELL_H);
+      setNotice({ left: left + 8, top: top + 8, text: `${holder.displayName || (holder as any).name || '他人'} 正在编辑` });
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = setTimeout(() => setNotice(null), 1500);
+      return;
+    }
+    // 申请锁
+    const token = (crypto as any).randomUUID?.() || String(Date.now());
+    lockTokenRef.current = token;
+    const socket = getWS();
+    socket?.emit('cell:lock:acquire', { gridId, sheetId, row, col, token });
+    // 监听一次性结果
+    const onGranted = (payload: any) => {
+      if (!payload?.cellKey || payload?.token !== lockTokenRef.current) return;
+      const [sId, rStr, cStr] = String(payload.cellKey).split(':');
+      if (Number(sId) !== sheetId || Number(rStr) !== row || Number(cStr) !== col) return;
+      setEditing({ row, col, value: String(current ?? "") });
+      // 开始续期
+      renewTimerRef.current = setInterval(() => {
+        const t = lockTokenRef.current; if (!t) return;
+        getWS()?.emit('cell:lock:renew', { gridId, sheetId, row, col, token: t });
+      }, 2000);
+      socket?.off('cell:lock:granted', onGranted);
+      socket?.off('cell:lock:denied', onDenied);
+    };
+    const onDenied = (payload: any) => {
+      if (!payload?.cellKey) return;
+      const [sId, rStr, cStr] = String(payload.cellKey).split(':');
+      if (Number(sId) !== sheetId || Number(rStr) !== row || Number(cStr) !== col) return;
+      let left = 0; for (let i = 0; i < col; i++) left += (colWidths[i] ?? CELL_W);
+      let top = 0; for (let i = 0; i < row; i++) top += (rowHeights[i] ?? CELL_H);
+      const nick = payload?.holder?.displayName || payload?.holder?.name || '他人';
+      setNotice({ left: left + 8, top: top + 8, text: `${nick} 正在编辑` });
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = setTimeout(() => setNotice(null), 1500);
+      lockTokenRef.current = null;
+      socket?.off('cell:lock:granted', onGranted);
+      socket?.off('cell:lock:denied', onDenied);
+    };
+    socket?.on('cell:lock:granted', onGranted);
+    socket?.on('cell:lock:denied', onDenied);
   }
 
   // simple resize by dragging right/bottom borders
@@ -156,26 +216,40 @@ export default function CanvasGrid({ gridId = "demo", sheetId = 0 }: { gridId?: 
       payload: { row: editing.row, col: editing.col, value: editing.value }
     });
     setEditing(null);
+    // 释放锁与清理
+    try {
+      const t = lockTokenRef.current;
+      if (t) socket?.emit('cell:lock:release', { gridId, sheetId, row: editing.row, col: editing.col, token: t });
+    } catch {}
+    lockTokenRef.current = null;
+    if (renewTimerRef.current) { clearInterval(renewTimerRef.current); renewTimerRef.current = null; }
   }
 
   return (
     <div className="mt-4 overflow-auto border rounded relative">
       <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown} style={{ cursor: 'cell' }} />
+      {notice && (
+        <div className="absolute text-xs bg-black/70 text-white px-2 py-1 rounded" style={{ left: notice.left, top: notice.top }}>
+          {notice.text}
+        </div>
+      )}
       {editing && (
-        <input
+        <textarea
           autoFocus
           className="absolute border rounded px-1 py-0.5 text-sm bg-white shadow"
           style={{
             left: (() => { let s = 0; for (let i = 0; i < editing.col; i++) s += (colWidths[i] ?? CELL_W); return s + 1; })(),
             top: (() => { let s = 0; for (let i = 0; i < editing.row; i++) s += (rowHeights[i] ?? CELL_H); return s + 1; })(),
             width: (colWidths[editing.col] ?? CELL_W) - 2,
-            height: (rowHeights[editing.row] ?? CELL_H) - 2
+            height: (rowHeights[editing.row] ?? CELL_H) - 2,
+            resize: 'none',
+            overflow: 'auto'
           }}
           value={editing.value}
           onChange={(e) => setEditing({ ...editing, value: e.target.value })}
           onBlur={handleCommit}
           onKeyDown={(e) => {
-            if (e.key === "Enter") handleCommit();
+            if (e.key === "Enter" && !(e as any).shiftKey) { e.preventDefault(); handleCommit(); }
             if (e.key === "Escape") setEditing(null);
           }}
         />

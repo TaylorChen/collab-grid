@@ -3,7 +3,6 @@ import { useParams } from "react-router-dom";
 import CanvasGrid from "@/components/Grid/CanvasGrid";
 import { useRealtime } from "@/hooks/useRealtime";
 import { useUserStore } from "@/stores/userStore";
-import { connectWS } from "@/services/websocket";
 import { api } from "@/services/api";
 import FormatToolbar from "@/components/Toolbar/FormatToolbar";
 import { useGridStore } from "@/stores/gridStore";
@@ -19,9 +18,6 @@ export default function GridEditor() {
   const [email, setEmail] = React.useState("");
   const [msg, setMsg] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    connectWS(token || undefined);
-  }, [token]);
 
   React.useEffect(() => {
     (async () => {
@@ -40,7 +36,7 @@ export default function GridEditor() {
     })();
   }, [id, token]);
 
-  useRealtime(id || "demo", currentSheet);
+  useRealtime(id || "demo", currentSheet, token || undefined);
 
   // 切换激活 sheet 时，同步到 store，用于尺寸隔离
   React.useEffect(() => {

@@ -3,11 +3,11 @@ import { connectWS, disconnectWS, getWS } from "@/services/websocket";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useGridStore } from "@/stores/gridStore";
 
-export function useRealtime(gridId: string, sheetId?: number) {
+export function useRealtime(gridId: string, sheetId?: number, token?: string) {
   const setConnected = useRealtimeStore((s) => s.setConnected);
 
   useEffect(() => {
-    const socket = connectWS();
+    const socket = connectWS(token);
     socket.on("connect", () => {
       setConnected(true);
       if (sheetId != null) {
@@ -56,6 +56,22 @@ export function useRealtime(gridId: string, sheetId?: number) {
         if (Array.isArray(rowHeights)) rowHeights.forEach((h: number, i: number) => s.setRowHeight(i, h));
         if (Array.isArray(colWidths)) colWidths.forEach((w: number, i: number) => s.setColWidth(i, w));
       }
+    });
+
+    // presence & lock events
+    socket.on("cell:presence", (data: any) => {
+      if (!data?.cellKey) return;
+      useRealtimeStore.getState().setCellPresence(data.cellKey, data.users || []);
+    });
+    socket.on("cell:lock:granted", ({ cellKey, holder }: any) => {
+      useRealtimeStore.getState().setCellLock(cellKey, holder || null);
+    });
+    socket.on("cell:lock:denied", ({ cellKey, holder }: any) => {
+      // 只给出锁拒绝提示，锁状态仍以 granted 为准
+      useRealtimeStore.getState().setCellLock(cellKey, holder || null);
+    });
+    socket.on("cell:lock:released", ({ cellKey }: any) => {
+      useRealtimeStore.getState().setCellLock(cellKey, null);
     });
 
     return () => {

@@ -4,7 +4,8 @@ import { WS_NAMESPACE } from "@collab-grid/shared";
 let socket: Socket | null = null;
 
 export function connectWS(token?: string) {
-  const wsUrl = import.meta.env.VITE_WS_URL || "http://localhost:4000";
+  const runtimeHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  const wsUrl = import.meta.env.VITE_WS_URL || `http://${runtimeHost}:4000`;
   if (!socket) {
     socket = io(`${wsUrl}${WS_NAMESPACE}`, { autoConnect: false });
   }

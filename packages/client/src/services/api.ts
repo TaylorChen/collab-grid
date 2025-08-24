@@ -1,4 +1,6 @@
-const base = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+const runtimeHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
+const runtimeProto = typeof window !== "undefined" ? window.location.protocol : "http:";
+const base = import.meta.env.VITE_API_BASE_URL || `${runtimeProto}//${runtimeHost}:4000`;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${base}${path}`, {

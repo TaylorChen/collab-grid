@@ -18,7 +18,8 @@ const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 async function bootstrap() {
   const app = express();
   app.use(cors({
-    origin: [/^http:\/\/(localhost|127\.0\.0\.1):\d+$/],
+    // 反射请求来源，便于本地局域网 IP 访问（开发环境）
+    origin: (_origin, cb) => cb(null, true),
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-grid-title"],
     credentials: false
@@ -65,6 +66,13 @@ async function bootstrap() {
     next();
   });
   nsp.on("connection", (socket) => {
+    // helper: stable color by user id
+    function colorFor(userId?: number) {
+      const colors = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899", "#14b8a6"]; // tailwind palette
+      if (!userId) return colors[0];
+      return colors[userId % colors.length];
+    }
+
     socket.on("grid:join", async ({ gridId, sheetId }) => {
       socket.join(gridId);
       try {
@@ -143,7 +151,7 @@ async function bootstrap() {
                 sheetId || null
               ]
             );
-            console.log("[layout:update]", { gridId, sheetId, rows, cols, rLen: rowHeights?.length, cLen: colWidths?.length });
+            // removed verbose layout update log
           } catch (e) {
             console.error("[layout:update] failed", e);
           }
@@ -189,6 +197,119 @@ async function bootstrap() {
           } catch {}
         }
       }
+    });
+
+    // --- Presence & Locking ---
+    socket.on("cell:focus", async ({ gridId, sheetId, row, col }) => {
+      try {
+        const cellKey = `${sheetId}:${row}:${col}`;
+        const user = (socket.data as any).user as { id?: number; displayName?: string } | undefined;
+        const userId = user?.id ? String(user.id) : socket.id;
+        const name = user?.displayName || `User-${userId}`;
+        const { db: _db } = await import("./utils/database"); // ensure adapter loaded
+        // use pubClient via io server adapter (redis is already connected); fallback to in-memory map if needed
+        try {
+          const { createClient } = await import("redis");
+          const r = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+          await r.connect();
+          await r.hSet(`grid:${gridId}:user:${userId}`, { name, color: colorFor(Number(userId)) });
+          await r.sAdd(`presence:${gridId}:${cellKey}`, userId);
+          await r.expire(`presence:${gridId}:${cellKey}`, 7);
+          const members = await r.sMembers(`presence:${gridId}:${cellKey}`);
+          const users: any[] = [];
+          for (const m of members) {
+            const h = await r.hGetAll(`grid:${gridId}:user:${m}`);
+            users.push({ userId: m, displayName: h.name || `User-${m}`, color: h.color || colorFor(Number(m)) });
+          }
+          await r.disconnect();
+          nsp.to(gridId).emit("cell:presence", { cellKey, users });
+        } catch {}
+      } catch {}
+    });
+
+    socket.on("cell:blur", async ({ gridId, sheetId, row, col }) => {
+      try {
+        const cellKey = `${sheetId}:${row}:${col}`;
+        const user = (socket.data as any).user as { id?: number } | undefined;
+        const userId = user?.id ? String(user.id) : socket.id;
+        try {
+          const { createClient } = await import("redis");
+          const r = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+          await r.connect();
+          await r.sRem(`presence:${gridId}:${cellKey}`, userId);
+          const members = await r.sMembers(`presence:${gridId}:${cellKey}`);
+          const users: any[] = [];
+          for (const m of members) {
+            const h = await r.hGetAll(`grid:${gridId}:user:${m}`);
+            users.push({ userId: m, displayName: h.name || `User-${m}`, color: h.color || colorFor(Number(m)) });
+          }
+          await r.disconnect();
+          nsp.to(gridId).emit("cell:presence", { cellKey, users });
+        } catch {}
+      } catch {}
+    });
+
+    socket.on("cell:lock:acquire", async ({ gridId, sheetId, row, col, token }) => {
+      const cellKey = `${sheetId}:${row}:${col}`;
+      const user = (socket.data as any).user as { id?: number; displayName?: string } | undefined;
+      const userId = user?.id ? String(user.id) : socket.id;
+      const name = user?.displayName || `User-${userId}`;
+      try {
+        const { createClient } = await import("redis");
+        const r = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+        await r.connect();
+        // 确保目录里有昵称与颜色（避免 race 或缺失）
+        await r.hSet(`grid:${gridId}:user:${userId}`, { name, color: colorFor(Number(userId)) });
+        const ok = await r.set(`lock:${gridId}:${cellKey}`, JSON.stringify({ userId, token, name }), { NX: true, PX: 5000 });
+        if (ok) {
+          // enrich displayName from directory
+          const dir = await r.hGetAll(`grid:${gridId}:user:${userId}`);
+          const displayName = dir?.name || name;
+          nsp.to(gridId).emit("cell:lock:granted", { cellKey, holder: { userId, displayName, name: displayName, color: colorFor(Number(userId)) }, token, ttlMs: 5000 });
+        } else {
+          const cur = await r.get(`lock:${gridId}:${cellKey}`);
+          let holder = cur ? JSON.parse(cur) : null;
+          if (holder?.userId) {
+            const dir = await r.hGetAll(`grid:${gridId}:user:${holder.userId}`);
+            if (dir?.name) holder.name = dir.name;
+          }
+          nsp.to(socket.id).emit("cell:lock:denied", { cellKey, holder, ttlMs: 5000 });
+        }
+        await r.disconnect();
+      } catch (e) {
+        nsp.to(socket.id).emit("cell:lock:denied", { cellKey });
+      }
+    });
+
+    socket.on("cell:lock:renew", async ({ gridId, sheetId, row, col, token }) => {
+      const cellKey = `${sheetId}:${row}:${col}`;
+      try {
+        const { createClient } = await import("redis");
+        const r = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+        await r.connect();
+        const cur = await r.get(`lock:${gridId}:${cellKey}`);
+        if (cur) {
+          const parsed = JSON.parse(cur);
+          if (parsed?.token === token) await r.pexpire(`lock:${gridId}:${cellKey}`, 5000);
+        }
+        await r.disconnect();
+      } catch {}
+    });
+
+    socket.on("cell:lock:release", async ({ gridId, sheetId, row, col, token }) => {
+      const cellKey = `${sheetId}:${row}:${col}`;
+      try {
+        const { createClient } = await import("redis");
+        const r = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+        await r.connect();
+        const cur = await r.get(`lock:${gridId}:${cellKey}`);
+        if (cur) {
+          const parsed = JSON.parse(cur);
+          if (parsed?.token === token) await r.del(`lock:${gridId}:${cellKey}`);
+        }
+        await r.disconnect();
+        nsp.to(gridId).emit("cell:lock:released", { cellKey });
+      } catch {}
     });
   });
 
