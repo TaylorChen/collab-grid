@@ -1,0 +1,28 @@
+{
+  "name": "collab-grid",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CollabGrid - 在线协作表格 (Monorepo)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @collab-grid/shared build && npm run -w @collab-grid/server build && npm run -w @collab-grid/client build",
+    "dev:server": "npm run -w @collab-grid/server dev",
+    "dev:client": "npm run -w @collab-grid/client dev",
+    "dev:infra": "docker compose up -d mysql redis minio",
+    "stop:infra": "docker compose down",
+    "format": "echo 'add formatter (prettier) later'",
+    "lint": "echo 'add eslint later'"
+  },
+  "author": "CollabGrid Contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}
+
