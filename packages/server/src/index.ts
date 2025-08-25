@@ -183,6 +183,118 @@ async function bootstrap() {
             console.error("[layout:update] failed", e);
           }
         }
+
+        // insert/delete rows/cols with cell reindexing and layout persistence
+        if (
+          op?.type === "grid:row:insert" || op?.type === "grid:row:delete" ||
+          op?.type === "grid:col:insert" || op?.type === "grid:col:delete"
+        ) {
+          try {
+            const dbm = (await import("./utils/database")).db;
+            const sheetId = normalizedSheetId;
+            const payload = op.payload || {};
+            const at: number = Math.max(0, Number(payload.at ?? 0));
+            const count: number = Math.max(1, Number(payload.count ?? 1));
+            const where: "before" | "after" = payload.where === "after" ? "after" : "before";
+
+            // load current layout
+            let rows = 100, cols = 26; let rowHeightsArr: number[] = [], colWidthsArr: number[] = [];
+            await dbm.execute(
+              "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, 100, 26)",
+              [sheetId || null]
+            );
+            const [ls] = await dbm.query<any[]>(
+              "SELECT `rows`, `cols`, row_heights, col_widths FROM grid_sheet_layout WHERE sheet_id=?",
+              [sheetId]
+            );
+            if ((ls as any[])?.[0]) {
+              const lay = (ls as any[])[0];
+              rows = lay.rows ?? rows;
+              cols = lay.cols ?? cols;
+              if (lay.row_heights) { try { rowHeightsArr = JSON.parse(lay.row_heights) || []; } catch { rowHeightsArr = []; } }
+              if (lay.col_widths) { try { colWidthsArr = JSON.parse(lay.col_widths) || []; } catch { colWidthsArr = []; } }
+            }
+            // ensure arrays length
+            while (rowHeightsArr.length < rows) rowHeightsArr.push(24);
+            while (colWidthsArr.length < cols) colWidthsArr.push(80);
+
+            const isRow = op.type.startsWith("grid:row");
+            const pivot = Math.min(isRow ? rows : cols, where === "after" ? at + 1 : at);
+
+            if (op.type === "grid:row:insert") {
+              // shift cells >= pivot downwards
+              await dbm.execute(
+                "UPDATE grid_cells SET row_index = row_index + ? WHERE grid_id=? AND sheet_id=? AND row_index >= ?",
+                [count, numericGridId || gridId, sheetId, pivot]
+              );
+              // update layout
+              const insertArr = Array(count).fill(24);
+              rowHeightsArr.splice(pivot, 0, ...insertArr);
+              rows += count;
+            }
+            if (op.type === "grid:row:delete") {
+              const end = Math.min(rows - 1, at + count - 1);
+              const start = Math.max(0, at);
+              const delCount = Math.max(0, end - start + 1);
+              if (delCount > 0) {
+                await dbm.execute(
+                  "DELETE FROM grid_cells WHERE grid_id=? AND sheet_id=? AND row_index BETWEEN ? AND ?",
+                  [numericGridId || gridId, sheetId, start, end]
+                );
+                await dbm.execute(
+                  "UPDATE grid_cells SET row_index = row_index - ? WHERE grid_id=? AND sheet_id=? AND row_index > ?",
+                  [delCount, numericGridId || gridId, sheetId, end]
+                );
+                rowHeightsArr.splice(start, delCount);
+                rows = Math.max(1, rows - delCount);
+              }
+            }
+            if (op.type === "grid:col:insert") {
+              await dbm.execute(
+                "UPDATE grid_cells SET col_index = col_index + ? WHERE grid_id=? AND sheet_id=? AND col_index >= ?",
+                [count, numericGridId || gridId, sheetId, pivot]
+              );
+              const insertArr = Array(count).fill(80);
+              colWidthsArr.splice(pivot, 0, ...insertArr);
+              cols += count;
+            }
+            if (op.type === "grid:col:delete") {
+              const end = Math.min(cols - 1, at + count - 1);
+              const start = Math.max(0, at);
+              const delCount = Math.max(0, end - start + 1);
+              if (delCount > 0) {
+                await dbm.execute(
+                  "DELETE FROM grid_cells WHERE grid_id=? AND sheet_id=? AND col_index BETWEEN ? AND ?",
+                  [numericGridId || gridId, sheetId, start, end]
+                );
+                await dbm.execute(
+                  "UPDATE grid_cells SET col_index = col_index - ? WHERE grid_id=? AND sheet_id=? AND col_index > ?",
+                  [delCount, numericGridId || gridId, sheetId, end]
+                );
+                colWidthsArr.splice(start, delCount);
+                cols = Math.max(1, cols - delCount);
+              }
+            }
+
+            // persist layout
+            await dbm.execute(
+              "UPDATE grid_sheet_layout SET `rows`=?, `cols`=?, row_heights=?, col_widths=? WHERE sheet_id=?",
+              [rows, cols, JSON.stringify(rowHeightsArr), JSON.stringify(colWidthsArr), sheetId]
+            );
+
+            // broadcast fresh snapshot to keep clients consistent
+            try {
+              const params: any[] = [numericGridId || gridId];
+              let sql = "SELECT row_index AS `row`, col_index AS `col`, value, style FROM grid_cells WHERE grid_id=?";
+              if (sheetId > 0) { sql += " AND sheet_id=?"; params.push(sheetId); }
+              const [cells] = await dbm.query<any[]>(sql, params);
+              const cellsParsed = (cells as any[]).map((c) => ({ ...c, style: c.style ? (()=>{ try { return JSON.parse(c.style); } catch { return undefined; } })() : undefined }));
+              nsp.to(String(gridId)).emit("grid:snapshot", { id: String(gridId), rows, cols, rowHeights: rowHeightsArr, colWidths: colWidthsArr, cells: cellsParsed });
+            } catch {}
+          } catch (e) {
+            console.error("[rows/cols:update] failed", e);
+          }
+        }
         // persist if cell:update
         if (op?.type === "cell:update" || op?.type === "cell:style") {
           try {

@@ -6,6 +6,7 @@ import { useUserStore } from "@/stores/userStore";
 import { api } from "@/services/api";
 import FormatToolbar from "@/components/Toolbar/FormatToolbar";
 import { useGridStore } from "@/stores/gridStore";
+ 
 
 export default function GridEditor() {
   const { id } = useParams();
@@ -17,6 +18,7 @@ export default function GridEditor() {
   const [currentSheet, setCurrentSheet] = React.useState<number>(0);
   const [email, setEmail] = React.useState("");
   const [msg, setMsg] = React.useState<string | null>(null);
+ 
 
 
   React.useEffect(() => {
@@ -45,15 +47,23 @@ export default function GridEditor() {
     }
   }, [currentSheet]);
 
+ 
+
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <FormatToolbar gridId={id || "demo"} sheetId={currentSheet} />
-      <div className="flex items-center gap-2 mb-2">
-        <input className="text-xl font-semibold border rounded px-2 py-1" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={async () => {
-          if (!token || !id) return;
-          try { await api.renameGrid(token, id, title.trim() || "Untitled"); } catch {}
-        }} />
-        <button className="px-2 py-1 text-sm border rounded" onClick={async () => {
+    <div className="fixed inset-0 flex flex-col">
+      <div className="shrink-0 p-4">
+        <FormatToolbar
+          gridId={id || "demo"}
+          sheetId={currentSheet}
+          title={title}
+          onTitleChange={(v) => setTitle(v)}
+          onTitleBlur={async () => {
+            if (!token || !id) return;
+            try { await api.renameGrid(token, id, title.trim() || "Untitled"); } catch {}
+          }}
+        />
+      <div className="flex gap-1 mt-2 border-b items-center">
+        <button className="mx-1 px-2 py-1 rounded border text-lg leading-none" title="新增 Sheet" onClick={async () => {
           if (!token || !id) return;
           const name = `Sheet${(sheets?.length || 0) + 1}`;
           const res: any = await api.createSheet(token, id, name);
@@ -65,19 +75,19 @@ export default function GridEditor() {
               useGridStore.getState().setActiveSheet(newId);
             }
           }
-        }}>新建Sheet</button>
-      </div>
-      <div className="flex gap-2 mb-2">
+        }}>+</button>
         {sheets.map((s) => (
-          <div key={s.id} className="flex items-center gap-1">
-            <button className={`px-3 py-1 rounded border ${currentSheet===s.id?"bg-blue-600 text-white":"bg-white"}`} onClick={() => setCurrentSheet(s.id)}>{s.name}</button>
-            <button className="text-xs text-gray-600" onClick={async () => {
+          <div key={s.id} className={`flex items-center gap-1 px-3 py-1 cursor-pointer ${currentSheet===s.id?"border-b-2 border-blue-600 text-blue-600":"text-gray-700"}`} onClick={() => setCurrentSheet(s.id)}>
+            <span>{s.name}</span>
+            <button className="text-xs text-gray-500 hover:text-gray-700" onClick={async (e) => {
+              e.stopPropagation();
               const name = prompt("重命名 sheet", s.name) || s.name;
               if (!token || !id || !name.trim()) return;
               const res: any = await api.renameSheet(token, id, s.public_id || s.id, name.trim());
               if (res?.success) setSheets(res.data);
             }}>✎</button>
-            <button className="text-red-600" onClick={async () => {
+            <button className="text-red-500 hover:text-red-700" onClick={async (e) => {
+              e.stopPropagation();
               if (!token || !id) return;
               if (sheets.length <= 1) { alert("至少保留一个 Sheet，不能删除最后一个"); return; }
               await api.deleteSheet(token, id, s.public_id || s.id);
@@ -92,7 +102,8 @@ export default function GridEditor() {
           </div>
         ))}
       </div>
-      <div className="flex gap-2 mb-4">
+      
+      <div className="flex gap-2 mt-3">
         {ownerId && user?.id === ownerId ? (
         <>
         <input className="border rounded p-2" placeholder="邀请协作者邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -116,7 +127,12 @@ export default function GridEditor() {
         </>
         ) : null}
       </div>
-      <CanvasGrid gridId={id || "demo"} sheetId={currentSheet} />
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="w-full h-full overflow-auto">
+          <CanvasGrid gridId={id || "demo"} sheetId={currentSheet} />
+        </div>
+      </div>
     </div>
   );
 }

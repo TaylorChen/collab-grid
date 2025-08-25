@@ -17,6 +17,9 @@ interface GridState {
 	// 所有 Sheet 的尺寸缓存
 	rowHeightsBySheet: Record<number, number[]>;
 	colWidthsBySheet: Record<number, number[]>;
+	// 冻结
+	freezeTopRow: boolean;
+	freezeFirstCol: boolean;
 
 	setCell: (row: number, col: number, value: string | number | boolean | null) => void;
 	setStyle: (row: number, col: number, patch: Partial<CellStyle>) => void;
@@ -27,6 +30,8 @@ interface GridState {
 	setColWidth: (col: number, w: number) => void;
 	setAllRowHeights: (sheetId: number, arr: number[]) => void;
 	setAllColWidths: (sheetId: number, arr: number[]) => void;
+	toggleFreezeTopRow: () => void;
+	toggleFreezeFirstCol: () => void;
 	reset: (rows?: number, cols?: number) => void;
 }
 
@@ -41,6 +46,8 @@ export const useGridStore = create<GridState>((set, get) => ({
 	activeSheetId: 0,
 	rowHeightsBySheet: {},
 	colWidthsBySheet: {},
+	freezeTopRow: false,
+	freezeFirstCol: false,
 
 	setCell: (row, col, value) =>
 		set((s) => ({ cells: { ...s.cells, [cellKey(row, col)]: value } })),
@@ -73,6 +80,8 @@ export const useGridStore = create<GridState>((set, get) => ({
 		colWidthsBySheet: { ...s.colWidthsBySheet, [sheetId]: arr.slice() },
 		...(sheetId === s.activeSheetId ? { colWidths: arr.slice() } : {})
 	})),
+	toggleFreezeTopRow: () => set((s) => ({ freezeTopRow: !s.freezeTopRow })),
+	toggleFreezeFirstCol: () => set((s) => ({ freezeFirstCol: !s.freezeFirstCol })),
 	reset: (rows = DEFAULT_GRID_ROWS, cols = DEFAULT_GRID_COLS) => set({ rows, cols, cells: {}, styles: {}, active: null })
 }));
 

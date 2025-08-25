@@ -94,11 +94,11 @@ GridController.get("/:id", async (req, res) => {
   const id = await resolveGridKey(String(key));
   if (!id) return res.status(404).json({ success: false, error: "Not found" });
   const [rows] = await db.query<any[]>("SELECT id, public_id, owner_id, title FROM grids WHERE id=? LIMIT 1", [id]);
-  const grid = rows[0];
+  const grid: any = (rows as any[])[0];
   if (!grid) return res.status(404).json({ success: false, error: "Not found" });
   // load cells snapshot
   const [cells] = await db.query<any[]>(
-    "SELECT row_index AS `row`, col_index AS `col`, value FROM grid_cells WHERE grid_id=?",
+    "SELECT row_index AS `row`, col_index AS `col`, value, style FROM grid_cells WHERE grid_id=?",
     [id]
   );
   const [sheets] = await db.query<any[]>(
@@ -107,9 +107,10 @@ GridController.get("/:id", async (req, res) => {
   );
   // layout for first sheet
   let layout: any = null;
-  if (sheets?.[0]?.id) {
-    const [ls] = await db.query<any[]>("SELECT `rows`, `cols`, row_heights, col_widths FROM grid_sheet_layout WHERE sheet_id=?", [sheets[0].id]);
-    layout = ls[0] || null;
+  if (Array.isArray(sheets) && sheets.length > 0 && (sheets[0] as any)?.id) {
+    const firstSheetId = (sheets[0] as any).id;
+    const [ls] = await db.query<any[]>("SELECT `rows`, `cols`, row_heights, col_widths FROM grid_sheet_layout WHERE sheet_id=?", [firstSheetId]);
+    layout = (ls as any[])[0] || null;
   }
   return res.json({ success: true, data: { ...grid, cells, sheets, layout } });
 });
@@ -123,10 +124,10 @@ GridController.patch("/:id", async (req, res) => {
   let finalTitle = (typeof title === "string" ? title : (typeof name === "string" ? name : "")).trim();
   if (!finalTitle) return res.status(400).json({ success: false, error: "Title required" });
   const [rows] = await db.query<any[]>("SELECT owner_id FROM grids WHERE id=? LIMIT 1", [id]);
-  const row = rows[0];
+  const row: any = (rows as any[])[0];
   if (!row) return res.status(404).json({ success: false, error: "Not found" });
   if (row.owner_id !== req.user!.id) return res.status(403).json({ success: false, error: "Forbidden" });
-  await db.execute("UPDATE grids SET title=? WHERE id=?", [finalTitle, id]);
+  await db.execute("UPDATE grids SET title=? WHERE id=", [finalTitle, id]);
   return res.json({ success: true, data: { id: Number(id), title: finalTitle } });
 });
 
@@ -136,10 +137,10 @@ GridController.delete("/:id", async (req, res) => {
   const id = await resolveGridKey(String(key));
   if (!id) return res.status(404).json({ success: false, error: "Not found" });
   const [rows] = await db.query<any[]>("SELECT owner_id FROM grids WHERE id=? LIMIT 1", [id]);
-  const row = rows[0];
+  const row: any = (rows as any[])[0];
   if (!row) return res.status(404).json({ success: false, error: "Not found" });
   if (row.owner_id !== req.user!.id) return res.status(403).json({ success: false, error: "Forbidden" });
-  await db.execute("DELETE FROM grids WHERE id=?", [id]);
+  await db.execute("DELETE FROM grids WHERE id=", [id]);
   return res.json({ success: true, data: true });
 });
 
