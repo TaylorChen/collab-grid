@@ -198,9 +198,9 @@ async function bootstrap() {
             const where: "before" | "after" = payload.where === "after" ? "after" : "before";
 
             // load current layout
-            let rows = 100, cols = 26; let rowHeightsArr: number[] = [], colWidthsArr: number[] = [];
+            let rows = 100, cols = 60; let rowHeightsArr: number[] = [], colWidthsArr: number[] = [];
             await dbm.execute(
-              "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, 100, 26)",
+              "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, 100, 60)",
               [sheetId || null]
             );
             const [ls] = await dbm.query<any[]>(
@@ -222,10 +222,15 @@ async function bootstrap() {
             const pivot = Math.min(isRow ? rows : cols, where === "after" ? at + 1 : at);
 
             if (op.type === "grid:row:insert") {
-              // shift cells >= pivot downwards
+              // shift cells >= pivot using large temporary offset to avoid PK conflicts
+              const SHIFT = 1000000;
               await dbm.execute(
                 "UPDATE grid_cells SET row_index = row_index + ? WHERE grid_id=? AND sheet_id=? AND row_index >= ?",
-                [count, numericGridId || gridId, sheetId, pivot]
+                [SHIFT, numericGridId || gridId, sheetId, pivot]
+              );
+              await dbm.execute(
+                "UPDATE grid_cells SET row_index = row_index - ? WHERE grid_id=? AND sheet_id=? AND row_index >= ?",
+                [SHIFT - count, numericGridId || gridId, sheetId, pivot]
               );
               // update layout
               const insertArr = Array(count).fill(24);
@@ -250,9 +255,14 @@ async function bootstrap() {
               }
             }
             if (op.type === "grid:col:insert") {
+              const SHIFT = 1000000;
               await dbm.execute(
                 "UPDATE grid_cells SET col_index = col_index + ? WHERE grid_id=? AND sheet_id=? AND col_index >= ?",
-                [count, numericGridId || gridId, sheetId, pivot]
+                [SHIFT, numericGridId || gridId, sheetId, pivot]
+              );
+              await dbm.execute(
+                "UPDATE grid_cells SET col_index = col_index - ? WHERE grid_id=? AND sheet_id=? AND col_index >= ?",
+                [SHIFT - count, numericGridId || gridId, sheetId, pivot]
               );
               const insertArr = Array(count).fill(80);
               colWidthsArr.splice(pivot, 0, ...insertArr);
