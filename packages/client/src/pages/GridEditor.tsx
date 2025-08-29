@@ -1,11 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { useParams } from "react-router-dom";
-import CanvasGrid from "@/components/Grid/CanvasGrid";
 import { useRealtime } from "@/hooks/useRealtime";
 import { useUserStore } from "@/stores/userStore";
 import { api } from "@/services/api";
-import FormatToolbar from "@/components/Toolbar/FormatToolbar";
 import { useGridStore } from "@/stores/gridStore";
+import ImprovedSpreadsheetLayout from "@/components/Layout/ImprovedSpreadsheetLayout";
  
 
 export default function GridEditor() {
@@ -50,88 +49,43 @@ export default function GridEditor() {
  
 
   return (
-    <div className="fixed inset-0 flex flex-col">
-      <div className="shrink-0 p-4">
-        <FormatToolbar
-          gridId={id || "demo"}
+    <div className="h-screen flex flex-col">
+      <div className="flex-1">
+        <ImprovedSpreadsheetLayout 
+          gridId={id || "demo"} 
           sheetId={currentSheet}
-          title={title}
-          onTitleChange={(v) => setTitle(v)}
-          onTitleBlur={async () => {
+          sheets={sheets}
+          onSheetChange={(sheetId) => {
+            setCurrentSheet(sheetId);
+            useGridStore.getState().setActiveSheet(sheetId);
+          }}
+          onNewSheet={async () => {
             if (!token || !id) return;
-            try { await api.renameGrid(token, id, title.trim() || "Untitled"); } catch {}
+            const name = `Sheet${(sheets?.length || 0) + 1}`;
+            console.log('🆕 创建新Sheet:', { name, currentSheets: sheets?.length });
+            const res: any = await api.createSheet(token, id, name);
+            if (res?.success) {
+              setSheets(res.data);
+              if (res.data?.length) {
+                const newId = res.data[res.data.length - 1].id;
+                console.log('🆕 新Sheet创建成功:', { newId, totalSheets: res.data.length });
+                setCurrentSheet(newId);
+                // 让useRealtime处理setActiveSheet，避免竞态条件
+                console.log('🆕 等待useRealtime连接新Sheet...');
+              }
+            } else {
+              console.error('🆕 新Sheet创建失败:', res);
+            }
+          }}
+          onRenameSheet={async (sheetId, newName) => {
+            // TODO: 实现重命名API
+            console.log('重命名Sheet:', sheetId, newName);
+          }}
+          onDeleteSheet={async (sheetId) => {
+            // TODO: 实现删除API
+            console.log('删除Sheet:', sheetId);
           }}
         />
-      <div className="flex gap-1 mt-2 border-b items-center">
-        <button className="mx-1 px-2 py-1 rounded border text-lg leading-none" title="新增 Sheet" onClick={async () => {
-          if (!token || !id) return;
-          const name = `Sheet${(sheets?.length || 0) + 1}`;
-          const res: any = await api.createSheet(token, id, name);
-          if (res?.success) {
-            setSheets(res.data);
-            if (res.data?.length) {
-              const newId = res.data[res.data.length - 1].id;
-              setCurrentSheet(newId);
-              useGridStore.getState().setActiveSheet(newId);
-            }
-          }
-        }}>+</button>
-        {sheets.map((s) => (
-          <div key={s.id} className={`flex items-center gap-1 px-3 py-1 cursor-pointer ${currentSheet===s.id?"border-b-2 border-blue-600 text-blue-600":"text-gray-700"}`} onClick={() => setCurrentSheet(s.id)}>
-            <span>{s.name}</span>
-            <button className="text-xs text-gray-500 hover:text-gray-700" onClick={async (e) => {
-              e.stopPropagation();
-              const name = prompt("重命名 sheet", s.name) || s.name;
-              if (!token || !id || !name.trim()) return;
-              const res: any = await api.renameSheet(token, id, s.public_id || s.id, name.trim());
-              if (res?.success) setSheets(res.data);
-            }}>✎</button>
-            <button className="text-red-500 hover:text-red-700" onClick={async (e) => {
-              e.stopPropagation();
-              if (!token || !id) return;
-              if (sheets.length <= 1) { alert("至少保留一个 Sheet，不能删除最后一个"); return; }
-              await api.deleteSheet(token, id, s.public_id || s.id);
-              const res: any = await api.listSheets(token, id);
-              if (res?.success) {
-                setSheets(res.data);
-                if (res.data?.length && !res.data.find((x: any) => x.id === currentSheet)) {
-                  setCurrentSheet(res.data[0].id);
-                }
-              }
-            }}>×</button>
-          </div>
-        ))}
-      </div>
-      
-      <div className="flex gap-2 mt-3">
-        {ownerId && user?.id === ownerId ? (
-        <>
-        <input className="border rounded p-2" placeholder="邀请协作者邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <button className="px-3 py-2 rounded bg-blue-600 text-white" onClick={async () => {
-          setMsg(null);
-          const emailTrim = (email || "").trim();
-          if (!emailTrim) { setMsg("请输入邮箱"); return; }
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) { setMsg("邮箱格式不正确"); return; }
-          try {
-            const res: any = await fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"}/api/collab/share`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ gridId: id, email: emailTrim })
-            }).then((r) => r.json());
-            if (res?.success) setMsg("已邀请协作"); else setMsg("邀请失败");
-          } catch (e: any) {
-            setMsg(`邀请失败(${e?.message || "网络错误"})`);
-          }
-        }}>邀请</button>
-        {msg && <div className="text-sm text-gray-600 self-center">{msg}</div>}
-        </>
-        ) : null}
-      </div>
-      </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <div className="w-full h-full overflow-auto">
-          <CanvasGrid gridId={id || "demo"} sheetId={currentSheet} />
-        </div>
       </div>
     </div>
   );

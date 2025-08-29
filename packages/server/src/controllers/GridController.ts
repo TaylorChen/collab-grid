@@ -38,7 +38,7 @@ GridController.post("/", async (req, res) => {
     if (sheetId) {
       await db.execute(
         "INSERT INTO grid_sheet_layout (sheet_id, `rows`, `cols`, row_heights, col_widths) VALUES (?, ?, ?, ?, ?)",
-        [sheetId, 100, 26, JSON.stringify([]), JSON.stringify([])]
+        [sheetId, 100, 60, JSON.stringify([]), JSON.stringify([])]
       );
     }
   } catch {}
@@ -127,7 +127,7 @@ GridController.patch("/:id", async (req, res) => {
   const row: any = (rows as any[])[0];
   if (!row) return res.status(404).json({ success: false, error: "Not found" });
   if (row.owner_id !== req.user!.id) return res.status(403).json({ success: false, error: "Forbidden" });
-  await db.execute("UPDATE grids SET title=? WHERE id=", [finalTitle, id]);
+  await db.execute("UPDATE grids SET title=? WHERE id=?", [finalTitle, id]);
   return res.json({ success: true, data: { id: Number(id), title: finalTitle } });
 });
 
@@ -140,7 +140,7 @@ GridController.delete("/:id", async (req, res) => {
   const row: any = (rows as any[])[0];
   if (!row) return res.status(404).json({ success: false, error: "Not found" });
   if (row.owner_id !== req.user!.id) return res.status(403).json({ success: false, error: "Forbidden" });
-  await db.execute("DELETE FROM grids WHERE id=", [id]);
+  await db.execute("DELETE FROM grids WHERE id=?", [id]);
   return res.json({ success: true, data: true });
 });
 
@@ -178,7 +178,7 @@ GridController.post("/:id/sheets", async (req, res) => {
   if (newSheetId) {
     // 初始化布局为默认状态
     await db.execute(
-      "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`, row_heights, col_widths) VALUES (?, 100, 26, ?, ?)",
+      "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`, row_heights, col_widths) VALUES (?, 100, 60, ?, ?)",
       [newSheetId, JSON.stringify([]), JSON.stringify([])]
     );
   }

@@ -5,7 +5,7 @@ import { createServer } from "http";
 import { Server as IOServer } from "socket.io";
 import { createClient } from "redis";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { WS_NAMESPACE } from "@collab-grid/shared";
+import { WS_NAMESPACE, DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS } from "@collab-grid/shared";
 import { ensureSchema } from "./utils/database";
 import { AuthController } from "./controllers/AuthController";
 import { GridController } from "./controllers/GridController";
@@ -114,20 +114,27 @@ async function bootstrap() {
           style: c.style ? (() => { try { return JSON.parse(c.style as any); } catch { return undefined; } })() : undefined
         }));
         // layout
-        let rows = 100, cols = 26, rowHeights: number[] | undefined, colWidths: number[] | undefined;
+        console.log('🚀 服务器使用的默认值:', { DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS });
+        let rows = DEFAULT_GRID_ROWS, cols = DEFAULT_GRID_COLS, rowHeights: number[] | undefined, colWidths: number[] | undefined;
         if (effectiveSheetId > 0) {
           const [ls] = await db.query<any[]>("SELECT `rows`, `cols`, row_heights, col_widths FROM grid_sheet_layout WHERE sheet_id=?", [effectiveSheetId]);
           const lay = (ls as any[])[0];
           if (lay) {
             rows = lay.rows ?? rows;
             cols = lay.cols ?? cols;
-            rowHeights = lay.row_heights ? (()=>{ try { return JSON.parse(lay.row_heights); } catch { return undefined; } })() : undefined;
-            colWidths = lay.col_widths ? (()=>{ try { return JSON.parse(lay.col_widths); } catch { return undefined; } })() : undefined;
+            // 解析并验证数组长度
+            const parsedRowHeights = lay.row_heights ? (()=>{ try { return JSON.parse(lay.row_heights); } catch { return undefined; } })() : undefined;
+            const parsedColWidths = lay.col_widths ? (()=>{ try { return JSON.parse(lay.col_widths); } catch { return undefined; } })() : undefined;
+            
+            // 如果解析的数组长度不匹配，使用undefined让客户端使用默认值
+            rowHeights = (Array.isArray(parsedRowHeights) && parsedRowHeights.length === rows) ? parsedRowHeights : undefined;
+            colWidths = (Array.isArray(parsedColWidths) && parsedColWidths.length === cols) ? parsedColWidths : undefined;
           }
         }
+        console.log('📊 发送grid:snapshot:', { rows, cols, rowHeights: rowHeights?.length, colWidths: colWidths?.length });
         socket.emit("grid:snapshot", { id: room, rows, cols, rowHeights, colWidths, cells: cellsParsed });
       } catch {
-        socket.emit("grid:snapshot", { id: room, rows: 100, cols: 26, cells: [] });
+        socket.emit("grid:snapshot", { id: room, rows: DEFAULT_GRID_ROWS, cols: DEFAULT_GRID_COLS, cells: [] });
       }
     });
 
@@ -164,8 +171,8 @@ async function bootstrap() {
             const dbm = (await import("./utils/database")).db;
             // step1: ensure row exists with defaults, avoids NOT NULL error on first write
             await dbm.execute(
-              "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, 100, 26)",
-              [sheetId || null]
+              "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, ?, ?)",
+              [effectiveSheetId, DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS]
             );
             // step2: update only provided fields; do not overwrite others
             await dbm.execute(

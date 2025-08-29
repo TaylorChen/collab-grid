@@ -7,20 +7,37 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
   const setConnected = useRealtimeStore((s) => s.setConnected);
 
   useEffect(() => {
+    console.log('🔌 useRealtime: 连接中...', { gridId, sheetId, token: !!token });
     const socket = connectWS(token);
     socket.on("connect", () => {
+      console.log('🔌 useRealtime: WebSocket已连接', { gridId, sheetId });
       setConnected(true);
       if (sheetId != null) {
+        console.log('🔌 useRealtime: 准备设置activeSheet...', { sheetId });
         useGridStore.getState().setActiveSheet(sheetId);
       }
+      console.log('🔌 useRealtime: 发送grid:join...', { gridId, sheetId });
       socket.emit("grid:join", { gridId, sheetId });
     });
     socket.on("disconnect", () => setConnected(false));
     socket.on("grid:snapshot", (snap: any) => {
+      console.log('📊 收到grid:snapshot:', { 
+        rows: snap.rows, 
+        cols: snap.cols, 
+        rowHeights: snap.rowHeights?.length, 
+        colWidths: snap.colWidths?.length,
+        sheetId 
+      });
+      
       useGridStore.getState().reset(snap.rows, snap.cols);
       if (sheetId != null && typeof sheetId === 'number') {
-        if (Array.isArray(snap.rowHeights)) useGridStore.getState().setAllRowHeights(sheetId, snap.rowHeights);
-        if (Array.isArray(snap.colWidths)) useGridStore.getState().setAllColWidths(sheetId, snap.colWidths);
+        if (Array.isArray(snap.rowHeights)) {
+          useGridStore.getState().setAllRowHeights(sheetId, snap.rowHeights);
+        }
+        if (Array.isArray(snap.colWidths)) {
+          useGridStore.getState().setAllColWidths(sheetId, snap.colWidths);
+        }
+        // 无论如何都要调用setActiveSheet，它会确保有默认的colWidths
         useGridStore.getState().setActiveSheet(sheetId);
       } else {
         if (Array.isArray(snap.rowHeights)) snap.rowHeights.forEach((h: number, i: number) => useGridStore.getState().setRowHeight(i, h));
@@ -79,11 +96,10 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
     };
   }, [gridId, sheetId, setConnected]);
 
-  // 当切换 sheet 时，重新加入并清空本地视图，等待快照
+  // 当切换 sheet 时，重新加入并等待快照（不立即清空数据）
   useEffect(() => {
     const socket = getWS();
-    if (socket && socket.connected) {
-      useGridStore.getState().reset();
+    if (socket && socket.connected && sheetId != null) {
       socket.emit("grid:join", { gridId, sheetId });
     }
   }, [gridId, sheetId]);

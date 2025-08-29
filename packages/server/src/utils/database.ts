@@ -204,7 +204,7 @@ export async function ensureSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS grid_sheet_layout (
       sheet_id BIGINT PRIMARY KEY,
       \`rows\` INT NOT NULL DEFAULT 100,
-      \`cols\` INT NOT NULL DEFAULT 26,
+      \`cols\` INT NOT NULL DEFAULT 60,
       row_heights TEXT NULL,
       col_widths TEXT NULL,
       FOREIGN KEY (sheet_id) REFERENCES grid_sheets(id) ON DELETE CASCADE
