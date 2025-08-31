@@ -4,12 +4,14 @@ import { useGridStore } from '@/stores/gridStore';
 interface FormattingToolbarProps {
   gridId: string;
   sheetId: number;
+  userPermission?: string | null;
+  disabled?: boolean;
 }
 
 /**
  * 格式化工具栏 - Luckysheet风格
  */
-export default function FormattingToolbar({ gridId, sheetId }: FormattingToolbarProps) {
+export default function FormattingToolbar({ gridId, sheetId, userPermission, disabled = false }: FormattingToolbarProps) {
   const { active, styles, setStyle } = useGridStore((s) => ({
     active: s.active,
     styles: s.styles || {},
@@ -46,7 +48,7 @@ export default function FormattingToolbar({ gridId, sheetId }: FormattingToolbar
 
   // 应用样式
   const applyStyle = (styleUpdate: any) => {
-    if (!active) return;
+    if (!active || disabled) return;
     setStyle(active.row, active.col, styleUpdate);
     console.log('🎨 应用样式:', styleUpdate, '到单元格:', active);
   };
@@ -99,13 +101,21 @@ export default function FormattingToolbar({ gridId, sheetId }: FormattingToolbar
   ];
 
   return (
-    <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-1 select-none">
+    <div className={`bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-1 select-none ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
+      {/* 只读模式提示 */}
+      {disabled && (
+        <div className="mr-4 text-sm text-orange-600 bg-orange-50 px-2 py-1 rounded flex items-center gap-1">
+          👁️ 只读模式 - 格式化功能已禁用
+        </div>
+      )}
+      
       {/* 字体大小 */}
       <div className="flex items-center gap-1 mr-2">
         <select 
           value={currentStyle?.fontSize || 12}
           onChange={(e) => setFontSize(Number(e.target.value))}
-          className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          disabled={disabled}
+          className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
         >
           <option value={9}>9</option>
           <option value={10}>10</option>

@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useGridStore } from "@/stores/gridStore";
+import { useRealtimeStore } from "@/stores/realtimeStore";
+import { useUserStore } from "@/stores/userStore";
 import { getWS } from "@/services/websocket";
 import GridContextMenu from "@/components/ContextMenu/GridContextMenu";
+import { toast } from '@/stores/toastStore';
 
 const CELL_W = 80;
 const CELL_H = 24;
@@ -12,8 +15,133 @@ const HEADER_H = 24;
  * 改进的表格组件 - 修复滚动同步问题
  * 参考Luckysheet的实现方式
  */
-export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?: string; sheetId?: number }) {
-  console.log('🚀 ImprovedGrid rendering!', { gridId, sheetId });
+interface ImprovedGridProps {
+  gridId?: string;
+  sheetId?: number;
+  isProtected?: boolean;
+  userPermission?: string | null;
+}
+
+export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected = false, userPermission }: ImprovedGridProps) {
+  
+  // 检查当前Sheet是否受保护或用户无编辑权限
+  const isSheetProtected = () => {
+    const isReadOnly = userPermission === 'read';
+    const result = isProtected || isReadOnly;
+    console.log('🔒 isSheetProtected被调用:', { 
+      isProtected, 
+      userPermission, 
+      isReadOnly, 
+      result, 
+      sheetId 
+    });
+    return result;
+  };
+  
+  // 获取保护提示信息
+  const getProtectionMessage = () => {
+    if (userPermission === 'read') {
+      return '您只有只读权限，无法编辑此表格。';
+    }
+    return '此工作表受到保护，无法编辑单元格。\n要编辑单元格，请先取消工作表保护。';
+  };
+  console.log('🚀 ImprovedGrid rendering!', { gridId, sheetId, isProtected });
+
+  // 生成编辑token用于锁机制
+  const generateEditToken = () => `edit_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  
+  // 当前编辑会话的token
+  const [currentEditToken, setCurrentEditToken] = useState<string | null>(null);
+
+  // 获取单元格锁
+  const acquireCellLock = (row: number, col: number): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const socket = getWS();
+      if (!socket) {
+        resolve(false);
+        return;
+      }
+
+      const token = generateEditToken();
+      setCurrentEditToken(token);
+
+      // 监听锁获取结果
+      const handleLockGranted = ({ cellKey, token: grantedToken }: any) => {
+        if (grantedToken === token) {
+          socket.off('cell:lock:granted', handleLockGranted);
+          socket.off('cell:lock:denied', handleLockDenied);
+          resolve(true);
+        }
+      };
+
+      const handleLockDenied = ({ cellKey, holder, token: deniedToken }: any) => {
+        if (deniedToken === token) {
+          socket.off('cell:lock:granted', handleLockGranted);
+          socket.off('cell:lock:denied', handleLockDenied);
+          
+          // 显示锁被拒绝的提示
+          if (holder?.displayName || holder?.name) {
+            toast.warning(`${holder.displayName || holder.name} 正在编辑此单元格`, 3000);
+          } else {
+            toast.warning('其他用户正在编辑此单元格', 3000);
+          }
+          resolve(false);
+        }
+      };
+
+      socket.on('cell:lock:granted', handleLockGranted);
+      socket.on('cell:lock:denied', handleLockDenied);
+
+      // 请求锁
+      socket.emit('cell:lock:acquire', {
+        gridId,
+        sheetId,
+        row,
+        col,
+        token
+      });
+
+      // 5秒超时
+      setTimeout(() => {
+        socket.off('cell:lock:granted', handleLockGranted);
+        socket.off('cell:lock:denied', handleLockDenied);
+        resolve(false);
+      }, 5000);
+    });
+  };
+
+  // 释放单元格锁
+  const releaseCellLock = (row: number, col: number) => {
+    const socket = getWS();
+    if (!socket || !currentEditToken) return;
+
+    socket.emit('cell:lock:release', {
+      gridId,
+      sheetId,
+      row,
+      col,
+      token: currentEditToken
+    });
+    
+    setCurrentEditToken(null);
+  };
+
+  // 检查单元格是否被锁定
+  const isCellLocked = (row: number, col: number) => {
+    const cellKey = `${sheetId}:${row}:${col}`;
+    const lock = lockByCell[cellKey];
+    if (!lock) return false;
+    
+    // 如果是当前用户锁定，则不算被锁定
+    const currentUserId = user?.id ? String(user.id) : null;
+    return lock.userId !== currentUserId;
+  };
+
+  // 获取锁定此单元格的用户信息
+  const getCellLockHolder = (row: number, col: number) => {
+    const cellKey = `${sheetId}:${row}:${col}`;
+    return lockByCell[cellKey];
+  };
   
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
@@ -37,6 +165,16 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
     undo: s.undo, redo: s.redo, canUndo: s.canUndo, canRedo: s.canRedo,
     history: s.history || [], historyIndex: s.historyIndex ?? -1
   }));
+
+  // Realtime state
+  const { lockByCell } = useRealtimeStore((s) => ({
+    lockByCell: s.lockByCell || {}
+  }));
+
+  // User state
+  const { user } = useUserStore((s) => ({
+    user: s.user
+  }));
   
   console.log('📊 Store状态:', { 
     rows, cols, 
@@ -53,6 +191,35 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ row: number; col: number } | null>(null);
   const [dragEnd, setDragEnd] = useState<{ row: number; col: number } | null>(null);
+
+  // 组件卸载时清理锁
+  useEffect(() => {
+    return () => {
+      if (editing && currentEditToken) {
+        releaseCellLock(editing.row, editing.col);
+      }
+    };
+  }, []);
+
+  // 监听编辑状态变化，定期续期锁
+  useEffect(() => {
+    if (!editing || !currentEditToken) return;
+
+    const renewInterval = setInterval(() => {
+      const socket = getWS();
+      if (socket) {
+        socket.emit('cell:lock:renew', {
+          gridId,
+          sheetId,
+          row: editing.row,
+          col: editing.col,
+          token: currentEditToken
+        });
+      }
+    }, 2000); // 每2秒续期一次
+
+    return () => clearInterval(renewInterval);
+  }, [editing, currentEditToken, gridId, sheetId]);
   
   // 滚动事件处理
   useEffect(() => {
@@ -676,8 +843,18 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
   };
   
   // 双击编辑
-  const handleMainDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMainDoubleClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
     console.log('🖱️ Canvas双击事件触发');
+    
+    // 检查Sheet是否受保护
+    const protectedStatus = isSheetProtected();
+    console.log('🔒 双击编辑保护检查:', { sheetId, isProtected, protectedStatus });
+    if (protectedStatus) {
+      console.log('🔒 编辑被禁止:', { isProtected, userPermission });
+      toast.warning(getProtectionMessage(), 4000);
+      return;
+    }
+    
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -698,6 +875,25 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
     console.log('🖱️ 双击计算得到单元格:', { row, col });
     
     if (row < rows && col < cols) {
+      // 检查单元格是否被锁定
+      if (isCellLocked(row, col)) {
+        const lockHolder = getCellLockHolder(row, col);
+        if (lockHolder?.displayName || lockHolder?.name) {
+          toast.warning(`${lockHolder.displayName || lockHolder.name} 正在编辑此单元格`, 3000);
+        } else {
+          toast.warning('其他用户正在编辑此单元格', 3000);
+        }
+        return;
+      }
+
+      // 尝试获取锁
+      const lockAcquired = await acquireCellLock(row, col);
+      if (!lockAcquired) {
+        console.log('🔒 获取单元格锁失败');
+        return;
+      }
+
+      // 锁获取成功，开始编辑
       const cellKey = `${row}:${col}`;
       const currentValue = cells[cellKey] || '';
       setEditing({ row, col, value: String(currentValue) });
@@ -708,7 +904,39 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
   // 提交编辑
   const handleCommitEdit = () => {
     if (!editing) return;
+    
+    // 检查Sheet是否受保护
+    if (isSheetProtected()) {
+      console.log('🔒 编辑提交被禁止:', { isProtected, userPermission });
+      toast.warning(getProtectionMessage(), 4000);
+      // 释放锁
+      releaseCellLock(editing.row, editing.col);
+      setEditing(null);
+      return;
+    }
+    
+    // 更新本地状态
     setCell(editing.row, editing.col, editing.value);
+    
+    // 发送到服务器保存
+    const socket = getWS();
+    if (socket) {
+      socket.emit("grid:operation", {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        actorId: null, // 添加actorId字段
+        type: "cell:update",
+        payload: { row: editing.row, col: editing.col, value: editing.value }
+      });
+      console.log('📡 发送WebSocket保存事件:', { row: editing.row, col: editing.col, value: editing.value });
+    } else {
+      console.warn('⚠️ WebSocket未连接，无法保存到服务器');
+    }
+    
+    // 释放锁
+    releaseCellLock(editing.row, editing.col);
+    
     setEditing(null);
     console.log('💾 提交编辑:', editing);
   };
@@ -858,6 +1086,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
         e.preventDefault();
         handleCommitEdit();
       } else if (e.key === 'Escape') {
+        // 释放锁并取消编辑
+        releaseCellLock(editing.row, editing.col);
         setEditing(null);
       }
     } else if (active) {
@@ -880,9 +1110,26 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
           break;
         case 'Enter':
         case 'F2':
-          const cellKey = `${active.row}:${active.col}`;
-          const currentValue = cells[cellKey] || '';
-          setEditing({ row: active.row, col: active.col, value: String(currentValue) });
+          // 检查单元格是否被锁定
+          if (isCellLocked(active.row, active.col)) {
+            const lockHolder = getCellLockHolder(active.row, active.col);
+            if (lockHolder?.displayName || lockHolder?.name) {
+              toast.warning(`${lockHolder.displayName || lockHolder.name} 正在编辑此单元格`, 3000);
+            } else {
+              toast.warning('其他用户正在编辑此单元格', 3000);
+            }
+            return;
+          }
+
+          // 异步获取锁并开始编辑
+          (async () => {
+            const lockAcquired = await acquireCellLock(active.row, active.col);
+            if (lockAcquired) {
+              const cellKey = `${active.row}:${active.col}`;
+              const currentValue = cells[cellKey] || '';
+              setEditing({ row: active.row, col: active.col, value: String(currentValue) });
+            }
+          })();
           return;
         default:
           // 处理复制粘贴快捷键
@@ -958,7 +1205,24 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
           
           // 直接输入字符开始编辑
           if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            setEditing({ row: active.row, col: active.col, value: e.key });
+            // 检查单元格是否被锁定
+            if (isCellLocked(active.row, active.col)) {
+              const lockHolder = getCellLockHolder(active.row, active.col);
+              if (lockHolder?.displayName || lockHolder?.name) {
+                toast.warning(`${lockHolder.displayName || lockHolder.name} 正在编辑此单元格`, 3000);
+              } else {
+                toast.warning('其他用户正在编辑此单元格', 3000);
+              }
+              return;
+            }
+
+            // 异步获取锁
+            (async () => {
+              const lockAcquired = await acquireCellLock(active.row, active.col);
+              if (lockAcquired) {
+                setEditing({ row: active.row, col: active.col, value: e.key });
+              }
+            })();
             return;
           }
       }
@@ -1177,6 +1441,61 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
         <div className="text-xs text-gray-600">⚏</div>
       </div>
       
+      {/* 锁定单元格指示器 */}
+      {Object.entries(lockByCell).map(([cellKey, lockHolder]) => {
+        if (!lockHolder) return null;
+        
+        const [sheetIdStr, rowStr, colStr] = cellKey.split(':');
+        const lockSheetId = parseInt(sheetIdStr);
+        const lockRow = parseInt(rowStr);
+        const lockCol = parseInt(colStr);
+        
+        // 只显示当前Sheet的锁
+        if (lockSheetId !== sheetId) return null;
+        
+        // 如果是当前用户在编辑，则不显示锁定指示器（已经有编辑框了）
+        const currentUserId = user?.id ? String(user.id) : null;
+        if (lockHolder.userId === currentUserId) return null;
+        
+        // 计算位置
+        let x = 0;
+        for (let c = 0; c < lockCol; c++) x += (colWidths[c] ?? CELL_W);
+        let y = 0;
+        for (let r = 0; r < lockRow; r++) y += (rowHeights[r] ?? CELL_H);
+        
+        return (
+          <div
+            key={cellKey}
+            className="absolute pointer-events-none z-40"
+            style={{
+              left: HEADER_W + x - scroll.left,
+              top: HEADER_H + y - scroll.top,
+              width: colWidths[lockCol] ?? CELL_W,
+              height: rowHeights[lockRow] ?? CELL_H,
+            }}
+          >
+            {/* 锁定边框 */}
+            <div 
+              className="absolute inset-0 border-2 border-orange-500 bg-orange-100 bg-opacity-20"
+              style={{
+                borderColor: lockHolder.color || '#f97316'
+              }}
+            />
+            
+            {/* 用户标签 */}
+            <div 
+              className="absolute -top-5 left-0 px-1 py-0.5 text-xs rounded text-white shadow-sm whitespace-nowrap"
+              style={{
+                backgroundColor: lockHolder.color || '#f97316',
+                fontSize: '10px'
+              }}
+            >
+              👤 {lockHolder.displayName || lockHolder.name || '正在编辑...'}
+            </div>
+          </div>
+        );
+      })}
+
       {/* 编辑框 */}
       {editing && (
         <input
@@ -1190,6 +1509,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
               e.preventDefault();
               handleCommitEdit();
             } else if (e.key === 'Escape') {
+              // 释放锁并取消编辑
+              releaseCellLock(editing.row, editing.col);
               setEditing(null);
             }
           }}
@@ -1518,6 +1839,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0 }: { gridId?
           onClose={() => setContextMenu(null)}
           gridId={gridId}
           sheetId={sheetId}
+          userPermission={userPermission}
         />
       )}
     </div>

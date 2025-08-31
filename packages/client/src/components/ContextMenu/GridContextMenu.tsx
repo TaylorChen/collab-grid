@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useGridStore } from '@/stores/gridStore';
+import { getWS } from '@/services/websocket';
+import { toast } from '@/stores/toastStore';
 
 interface GridContextMenuProps {
   x: number;
@@ -9,12 +11,13 @@ interface GridContextMenuProps {
   onClose: () => void;
   gridId: string;
   sheetId: number;
+  userPermission?: string | null;
 }
 
 /**
  * 表格右键上下文菜单 - Luckysheet风格
  */
-export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheetId }: GridContextMenuProps) {
+export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheetId, userPermission }: GridContextMenuProps) {
   const { cells, setCell, setStyle, styles } = useGridStore((s) => ({
     cells: s.cells || {},
     setCell: s.setCell,
@@ -27,6 +30,28 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
   const cellKey = `${row}:${col}`;
   const currentValue = cells[cellKey];
   const currentStyle = styles[cellKey];
+  
+  // 检查用户是否有编辑权限
+  const hasWritePermission = userPermission === 'owner' || userPermission === 'write';
+  const isReadOnly = userPermission === 'read';
+
+  // 辅助函数：发送单元格更新到服务器
+  const sendCellUpdate = (newValue: string | null) => {
+    const socket = getWS();
+    if (socket) {
+      socket.emit("grid:operation", {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        actorId: null,
+        type: "cell:update",
+        payload: { row, col, value: newValue }
+      });
+      console.log('📡 发送WebSocket保存事件:', { row, col, value: newValue });
+    } else {
+      console.warn('⚠️ WebSocket未连接，无法保存到服务器');
+    }
+  };
 
   // 复制
   const handleCopy = () => {
@@ -39,9 +64,15 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
 
   // 剪切
   const handleCut = () => {
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法进行编辑操作。', 3000);
+      onClose();
+      return;
+    }
     if (currentValue != null) {
       navigator.clipboard.writeText(String(currentValue));
       setCell(row, col, '');
+      sendCellUpdate('');
       console.log('✂️ 剪切内容:', currentValue);
     }
     onClose();
@@ -49,9 +80,15 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
 
   // 粘贴
   const handlePaste = async () => {
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法进行编辑操作。', 3000);
+      onClose();
+      return;
+    }
     try {
       const text = await navigator.clipboard.readText();
       setCell(row, col, text);
+      sendCellUpdate(text);
       console.log('📌 粘贴内容:', text);
     } catch (error) {
       console.error('粘贴失败:', error);
@@ -61,7 +98,13 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
 
   // 清除内容
   const handleClearContent = () => {
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法进行编辑操作。', 3000);
+      onClose();
+      return;
+    }
     setCell(row, col, '');
+    sendCellUpdate('');
     console.log('🗑️ 清除内容');
     onClose();
   };

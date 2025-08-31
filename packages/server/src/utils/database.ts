@@ -147,6 +147,7 @@ export async function ensureSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS grid_collaborators (
       grid_id BIGINT NOT NULL,
       user_id BIGINT NOT NULL,
+      permission ENUM('read', 'write') NOT NULL DEFAULT 'write',
       added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (grid_id, user_id),
       FOREIGN KEY (grid_id) REFERENCES grids(id) ON DELETE CASCADE,
@@ -161,6 +162,7 @@ export async function ensureSchema(): Promise<void> {
       grid_id BIGINT NOT NULL,
       public_id VARCHAR(32) UNIQUE NULL,
       name VARCHAR(255) NOT NULL,
+      is_protected BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY unique_sheet_name (grid_id, name),
       FOREIGN KEY (grid_id) REFERENCES grids(id) ON DELETE CASCADE
@@ -195,6 +197,13 @@ export async function ensureSchema(): Promise<void> {
   }
   try {
     await db.query("ALTER TABLE grids ADD COLUMN last_modified TIMESTAMP NULL DEFAULT NULL, ADD COLUMN last_editor_id BIGINT NULL");
+  } catch (e) {
+    // ignore if exists
+  }
+  
+  // add permission column to grid_collaborators if missing
+  try {
+    await db.query("ALTER TABLE grid_collaborators ADD COLUMN permission ENUM('read', 'write') NOT NULL DEFAULT 'write'");
   } catch (e) {
     // ignore if exists
   }

@@ -150,7 +150,49 @@ async function bootstrap() {
             const [gidRows] = await db.query<any[]>("SELECT id FROM grids WHERE public_id=? LIMIT 1", [String(gridId)]);
             numericGridId = (gidRows as any[])?.[0]?.id ?? 0;
           }
-        } catch {}
+          
+          // 权限检查：只有写权限的用户才能进行编辑操作
+          const user = (socket.data as any).user as { id?: number } | undefined;
+          const userId = user?.id;
+          if (!userId) {
+            console.warn('⚠️ WebSocket操作被拒绝：用户未认证');
+            return; // 未认证用户不能执行操作
+          }
+          
+          // 检查用户是否是拥有者
+          const [gridRows] = await db.query<any[]>(
+            "SELECT owner_id FROM grids WHERE id=? LIMIT 1", 
+            [numericGridId]
+          );
+          if (gridRows.length === 0) {
+            console.warn('⚠️ WebSocket操作被拒绝：Grid不存在');
+            return; // Grid不存在
+          }
+          
+          const grid = gridRows[0];
+          const isOwner = grid.owner_id === userId;
+          let hasWritePermission = isOwner;
+          
+          if (!isOwner) {
+            // 检查协作者权限
+            const [collaboratorRows] = await db.query<any[]>(
+              "SELECT permission FROM grid_collaborators WHERE grid_id=? AND user_id=? LIMIT 1", 
+              [numericGridId, userId]
+            );
+            if (collaboratorRows.length > 0) {
+              hasWritePermission = collaboratorRows[0].permission === 'write';
+            }
+          }
+          
+          if (!hasWritePermission) {
+            console.warn('⚠️ WebSocket操作被拒绝：用户无写权限', { userId, gridId, isOwner });
+            return; // 无写权限，拒绝操作
+          }
+          
+        } catch (e) {
+          console.error('❌ WebSocket权限检查失败:', e);
+          return;
+        }
         // normalize sheetId (fallback to first sheet if invalid/missing)
         let normalizedSheetId = typeof op?.sheetId === 'number' ? op.sheetId : 0;
         if (!(normalizedSheetId > 0)) {
