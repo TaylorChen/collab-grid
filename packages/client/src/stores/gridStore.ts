@@ -20,6 +20,12 @@ interface CellStyle {
   };
 }
 
+// 列筛选结构：当前实现为“按值多选”
+export interface ColumnFilter {
+  type: 'values';
+  selected: string[]; // 选中的显示值（字符串化）
+}
+
 // 历史记录类型
 interface HistoryEntry {
 	type: 'cell_change' | 'style_change' | 'bulk_change';
@@ -103,10 +109,10 @@ interface GridState {
 	setAllColWidths: (sheetId: number, arr: number[]) => void;
 	// 排序与筛选（基础）
 	sortSpec?: { col: number | null; asc: boolean };
-	filters?: Record<number, string | null>;
+	filters?: Record<number, ColumnFilter | null>;
 	setSort: (col: number | null, asc?: boolean) => void;
 	clearSort: () => void;
-	setFilter: (col: number, query: string | null) => void;
+	setFilter: (col: number, filter: ColumnFilter | null) => void;
 	clearFilter: (col: number) => void;
 	toggleFreezeTopRow: () => void;
 	toggleFreezeFirstCol: () => void;
@@ -420,7 +426,7 @@ export const useGridStore = create<GridState>((set, get) => ({
 	filters: {},
 	setSort: (col, asc) => set((s) => ({ sortSpec: col == null ? { col: null, asc: true } : { col, asc: asc ?? (s.sortSpec?.col === col ? !s.sortSpec!.asc : true) } })),
 	clearSort: () => set(() => ({ sortSpec: { col: null, asc: true } })),
-	setFilter: (col, query) => set((s) => ({ filters: { ...(s.filters || {}), [col]: (query && query.trim()) ? query.trim() : null } })),
+	setFilter: (col, filter) => set((s) => ({ filters: { ...(s.filters || {}), [col]: filter } })),
 	clearFilter: (col) => set((s) => { const next = { ...(s.filters || {}) }; delete next[col]; return { filters: next }; }),
 	toggleFreezeTopRow: () => set((s) => ({ 
 		freezeTopRow: !s.freezeTopRow,

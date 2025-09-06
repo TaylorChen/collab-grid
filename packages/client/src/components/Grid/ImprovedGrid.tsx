@@ -204,6 +204,26 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   } | null>(null);
   const headerInputRef = useRef<HTMLInputElement>(null);
 
+  // 计算指定列头右侧的弹窗定位（视口坐标）
+  const computeHeaderPopoverPos = (colIndex: number) => {
+    const container = containerRef.current;
+    if (!container) return { left: 0, top: 0 };
+    const rect = container.getBoundingClientRect();
+    let sum = 0;
+    for (let c = 0; c < colIndex; c++) sum += (colWidths[c] ?? CELL_W);
+    const colWidth = colWidths[colIndex] ?? CELL_W;
+    // 头部画布相对视口左边缘位置：容器左 + HEADER_W
+    const baseLeft = rect.left + HEADER_W;
+    // 考虑水平滚动：列头画布内容向左移动 scroll.left
+    let left = baseLeft - scroll.left + sum + colWidth - 20;
+    // 头部底部作为弹窗顶部基线
+    let top = rect.top + HEADER_H;
+    // 简单的视口边界保护（弹窗固定宽度 w-64 = 256）
+    const maxLeft = Math.max(0, (window.innerWidth || 0) - 260);
+    left = Math.min(left, maxLeft);
+    return { left, top };
+  };
+
   // 组件卸载时清理锁
   useEffect(() => {
     return () => {
@@ -234,6 +254,17 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       headerInputRef.current.select?.();
     }
   }, [headerMenu?.col]);
+
+  // 当滚动/尺寸/列宽变化时，实时更新弹窗位置，使其跟随列头
+  useEffect(() => {
+    if (!headerMenu) return;
+    const { left, top } = computeHeaderPopoverPos(headerMenu.col);
+    // 只有在位置变化明显时才更新，避免多余渲染
+    if (Math.abs((headerMenu.left ?? 0) - left) > 0.5 || Math.abs((headerMenu.top ?? 0) - top) > 0.5) {
+      setHeaderMenu({ ...headerMenu, left, top });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerMenu?.col, scroll.left, containerSize.width, containerSize.height, colWidths]);
 
   // 向服务器广播当前激活单元格的存在（presence），帮助其他协作者知晓多人关注/操作同一格
   useEffect(() => {
@@ -333,10 +364,60 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     return () => container.removeEventListener('click', handleContainerClick);
   }, [active, setActive]);
   
-  // 计算总尺寸
-  
+  // 计算行顺序：先排序再按筛选过滤；并生成物理行 -> 当前可视Y偏移映射
+  const visibleRowOrder = React.useMemo(() => {
+    const base: number[] = Array.from({ length: rows }, (_, i) => i);
+    // 排序（与主渲染一致）
+    const sortCol: number | null = (sortSpec as any)?.col ?? null;
+    const sortAsc: boolean = (sortSpec as any)?.asc ?? true;
+    if (sortCol != null && sortCol >= 0 && sortCol < cols) {
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+      base.sort((a, b) => {
+        const va = getCellDisplayValue ? getCellDisplayValue(a, sortCol) : cells[`${a}:${sortCol}`];
+        const vb = getCellDisplayValue ? getCellDisplayValue(b, sortCol) : cells[`${b}:${sortCol}`];
+        const sa = va == null ? '' : String(va);
+        const sb = vb == null ? '' : String(vb);
+        const cmp = collator.compare(sa, sb);
+        return sortAsc ? cmp : -cmp;
+      });
+    }
+    // 筛选
+    const entries = Object.entries(filters || {});
+    if (entries.length === 0) return base;
+    return base.filter((r) => {
+      for (const [k, filter] of entries) {
+        if (!filter) continue;
+        const cIdx = Number(k);
+        const v = getCellDisplayValue ? getCellDisplayValue(r, cIdx) : cells[`${r}:${cIdx}`];
+        const s = v == null ? '' : String(v);
+        if (filter.type === 'values') {
+          const set = new Set(filter.selected);
+          if (set.size > 0 && !set.has(s)) return false;
+        }
+      }
+      return true;
+    });
+  }, [rows, cols, sortSpec, filters, cells, getCellDisplayValue]);
+
+  const rowOffsetMap = React.useMemo(() => {
+    const map: Record<number, number> = {};
+    let acc = 0;
+    for (const r of visibleRowOrder) {
+      map[r] = acc;
+      acc += (rowHeights[r] ?? CELL_H);
+    }
+    return map;
+  }, [visibleRowOrder, rowHeights]);
+
+  const visibleRowsSet = React.useMemo(() => new Set(visibleRowOrder), [visibleRowOrder]);
+
+  // 计算总尺寸（宽度不变；高度为可见行总高）
   const totalWidth = colWidths.slice(0, cols).reduce((sum: number, w: number | undefined) => sum + (w ?? CELL_W), 0);
-  const totalHeight = rowHeights.slice(0, rows).reduce((sum: number, h: number | undefined) => sum + (h ?? CELL_H), 0);
+  const totalHeight = React.useMemo(() => {
+    let sum = 0;
+    for (const r of visibleRowOrder) sum += (rowHeights[r] ?? CELL_H);
+    return sum;
+  }, [visibleRowOrder, rowHeights]);
   
   
   // 🚨 紧急修复：如果colWidths为空且cols>0，强制初始化
@@ -449,7 +530,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       // 筛选指示（若该列启用了筛选）
       try {
         const q = (filters as any)?.[c];
-        if (q) {
+        const isActive = q && ((q.type === 'values' && Array.isArray(q.selected) && q.selected.length > 0));
+        if (isActive) {
           ctx.fillStyle = '#2563eb';
           ctx.font = '10px system-ui';
           ctx.fillText('⎘', x + cw - 12, h / 2); // 小图标提示有筛选
@@ -489,11 +571,13 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     return null;
   };
   const findRowEdgeNear = (y: number, tolerance = 3): number | null => {
+    // 仅在可见行中查找边界，返回物理行号
     let acc = 0;
-    for (let r = 0; r < rows; r++) {
-      const rh = rowHeights[r] ?? CELL_H;
+    for (let i = 0; i < visibleRowOrder.length; i++) {
+      const phys = visibleRowOrder[i];
+      const rh = rowHeights[phys] ?? CELL_H;
       const edge = acc + rh;
-      if (Math.abs(edge - y) <= tolerance) return r;
+      if (Math.abs(edge - y) <= tolerance) return phys;
       acc += rh;
     }
     return null;
@@ -629,21 +713,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     // 记录跳过的单元格（被合并的单元格）
     const skippedCells = new Set<string>();
     
-    // 排序（视图层，不改真实数据，先支持单列）
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-    const sortCol: number | null = (sortSpec as any)?.col ?? null;
-    const sortAsc: boolean = (sortSpec as any)?.asc ?? true;
-    const rowOrder: number[] = Array.from({ length: rows }, (_, i) => i);
-    if (sortCol != null && sortCol >= 0 && sortCol < cols) {
-      rowOrder.sort((a, b) => {
-        const va = getCellDisplayValue ? getCellDisplayValue(a, sortCol) : cells[`${a}:${sortCol}`];
-        const vb = getCellDisplayValue ? getCellDisplayValue(b, sortCol) : cells[`${b}:${sortCol}`];
-        const sa = va == null ? '' : String(va);
-        const sb = vb == null ? '' : String(vb);
-        const cmp = collator.compare(sa, sb);
-        return sortAsc ? cmp : -cmp;
-      });
-    }
+    // 使用可见行顺序（已按排序与筛选处理）
+    const rowOrder: number[] = visibleRowOrder;
 
     // 计算可视窗口范围
     const viewLeft = scroll.left;
@@ -651,9 +722,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     const viewRight = scroll.left + Math.max(0, (containerSize.width - HEADER_W));
     const viewBottom = scroll.top + Math.max(0, (containerSize.height - HEADER_H));
 
-    // 起始行/列与偏移
+    // 起始行/列与偏移（基于可见行集）
     let startRow = 0; let y0 = 0; let topSkip = viewTop;
-    while (startRow < rows && topSkip > 0) {
+    while (startRow < rowOrder.length && topSkip > 0) {
       const phys = rowOrder[startRow];
       const h = (rowHeights[phys] ?? CELL_H);
       if (topSkip < h) break; topSkip -= h; y0 += h; startRow++;
@@ -666,7 +737,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     const extraRows = 2, extraCols = 2;
     // 结束行/列
     let endRow = startRow, accY = y0;
-    while (endRow < rows && accY < viewBottom + extraRows * CELL_H) {
+    while (endRow < rowOrder.length && accY < viewBottom + extraRows * CELL_H) {
       const phys = rowOrder[endRow];
       accY += (rowHeights[phys] ?? CELL_H);
       endRow++;
@@ -679,15 +750,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const physRow = rowOrder[r];
       const rh = (rowHeights[physRow] ?? CELL_H);
       let x = x0Base;
-      // 行级筛选：若任一启用的列筛选不匹配，则整行淡显
+      // 已过滤后的行必定匹配
       let rowMatched = true;
-      const fEntries = Object.entries(filters || {});
-      for (const [k, q] of fEntries) {
-        const cIdx = Number(k);
-        if (!q) continue;
-        const v = getCellDisplayValue ? getCellDisplayValue(physRow, cIdx) : cells[`${physRow}:${cIdx}`];
-        if (!(v != null && String(v).indexOf(String(q)) !== -1)) { rowMatched = false; break; }
-      }
       
       for (let c = startCol; c < endCol; c++) {
         const cw = colWidths[c] ?? CELL_W;
@@ -719,7 +783,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         
         
         
-        // 内容和样式（应用基础筛选：包含匹配）
+        // 内容和样式
         const value = getCellDisplayValue ? getCellDisplayValue(physRow, c) : cells[cellKey];
         ctx.globalAlpha = rowMatched ? 1 : 0.18;
         const style = styles[cellKey];
@@ -847,8 +911,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       ctx.save();
       let cellX = 0;
       for (let c = 0; c < active.col; c++) cellX += (colWidths[c] ?? CELL_W);
-      let cellY = 0;
-      for (let r = 0; r < active.row; r++) cellY += (rowHeights[r] ?? CELL_H);
+      let cellY = rowOffsetMap[active.row] ?? 0;
       
       ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
       ctx.fillRect(cellX, cellY, colWidths[active.col] ?? CELL_W, rowHeights[active.row] ?? CELL_H);
@@ -861,8 +924,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       if (selection.type === 'cell' && selection.row !== undefined && selection.col !== undefined) {
         let cellX = 0;
         for (let c = 0; c < selection.col; c++) cellX += (colWidths[c] ?? CELL_W);
-        let cellY = 0;
-        for (let r = 0; r < selection.row; r++) cellY += (rowHeights[r] ?? CELL_H);
+        let cellY = rowOffsetMap[selection.row] ?? 0;
         
         ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
         ctx.fillRect(cellX, cellY, colWidths[selection.col] ?? CELL_W, rowHeights[selection.row] ?? CELL_H);
@@ -874,8 +936,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           if (r < rows && c < cols) {
             let cellX = 0;
             for (let col = 0; col < c; col++) cellX += (colWidths[col] ?? CELL_W);
-            let cellY = 0;
-            for (let row = 0; row < r; row++) cellY += (rowHeights[row] ?? CELL_H);
+            let cellY = rowOffsetMap[r] ?? 0;
             
             ctx.fillRect(cellX, cellY, colWidths[c] ?? CELL_W, rowHeights[r] ?? CELL_H);
           }
@@ -890,8 +951,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           if (r < rows && c < cols) {
             let cellX = 0;
             for (let col = 0; col < c; col++) cellX += (colWidths[col] ?? CELL_W);
-            let cellY = 0;
-            for (let row = 0; row < r; row++) cellY += (rowHeights[row] ?? CELL_H);
+            let cellY = rowOffsetMap[r] ?? 0;
             
             ctx.strokeRect(cellX, cellY, colWidths[c] ?? CELL_W, rowHeights[r] ?? CELL_H);
           }
@@ -911,8 +971,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       // 计算区域坐标
       let startX = 0;
       for (let c = 0; c < startCol; c++) startX += (colWidths[c] ?? CELL_W);
-      let startY = 0;
-      for (let r = 0; r < startRow; r++) startY += (rowHeights[r] ?? CELL_H);
+      let startY = rowOffsetMap[startRow] ?? 0;
       
       let endX = startX;
       for (let c = startCol; c <= endCol; c++) endX += (colWidths[c] ?? CELL_W);
@@ -953,6 +1012,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     containerSize.height,
     freezeRows,
     freezeCols,
+    // 关键：筛选与排序变化时需要重绘
+    filters,
+    sortSpec,
   ]);
 
   // Global move/up handlers for resizing
@@ -1763,9 +1825,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
               (setSort as any)(col, true);
             }
           } else {
-            const left = rect.left + sum + (colWidths[col] ?? CELL_W) - 20;
-            const top = rect.bottom;
-            setHeaderMenu({ col, left, top, search: '' });
+            const pos = computeHeaderPopoverPos(col);
+            setHeaderMenu({ col, left: pos.left, top: pos.top, search: '' });
           }
         }}
         onContextMenu={(e) => {
@@ -1775,10 +1836,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           let col = 0, sum = 0;
           while (col < cols && sum + (colWidths[col] ?? CELL_W) < x) { sum += (colWidths[col] ?? CELL_W); col++; }
           if (col >= cols) return;
-          // 打开列头下拉面板（代替系统prompt）
-          const left = rect.left + sum + (colWidths[col] ?? CELL_W) - 20;
-          const top = rect.bottom;
-          setHeaderMenu({ col, left, top, search: '' });
+          // 打开列头下拉面板：按当前列实时计算位置
+          const pos = computeHeaderPopoverPos(col);
+          setHeaderMenu({ col, left: pos.left, top: pos.top, search: '' });
         }}
         onMouseMove={(e) => {
           if (resizing?.mode === 'col') return;
@@ -2012,14 +2072,13 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         const key = `${sheetId}:${target.row}:${target.col}`;
         const users: any[] = (presenceByCell as any)[key] || [];
         // 过滤当前用户，仅显示其他人
-        const others = users.filter((u) => u?.userId && u.userId !== user?.id);
+        const others = users.filter((u: any) => u?.userId && u.userId !== user?.id);
         if (others.length === 0) return null;
 
         // 计算该单元格的位置用于定位提示
         let x = HEADER_W;
         for (let c = 0; c < target.col; c++) x += (colWidths[c] ?? CELL_W);
-        let y = HEADER_H;
-        for (let r = 0; r < target.row; r++) y += (rowHeights[r] ?? CELL_H);
+        let y = HEADER_H + (rowOffsetMap[target.row] ?? 0);
         x = x - scroll.left;
         y = y - scroll.top;
 
@@ -2088,31 +2147,70 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
                 if (set.size > 2000) break; // 安全上限
               }
               const list = Array.from(set).sort();
-              const current = (filters as any)?.[col] || '';
+              const current = (filters as any)?.[col] as any;
               return (
                 <div>
-                  <div className="p-1 text-xs text-gray-500">唯一值（前{limit}行抽样）</div>
+                  <div className="p-1 text-xs text-gray-500 flex items-center justify-between">
+                    <span>按值筛选（前{limit}行抽样）</span>
+                    <span className="text-blue-600 cursor-pointer select-none" onClick={() => {
+                      // 反选
+                      const cur = (filters as any)?.[col]?.selected || [];
+                      const all = list.slice(0, 300);
+                      const next = all.filter(v => !cur.includes(v));
+                      (setFilter as any)(col, { type: 'values', selected: next });
+                    }}>反选</span>
+                  </div>
                   {list.length === 0 && <div className="p-2 text-sm text-gray-400">无匹配项</div>}
-                  {list.slice(0, 300).map((val) => (
-                    <label key={val} className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-gray-50">
-                      <input
-                        type="radio"
-                        name="filter-value"
-                        checked={current === val}
-                        onChange={() => {
-                          (setFilter as any)(col, val);
-                        }}
-                      />
-                      <span className="truncate" title={val || '(空白)'}>{val || '(空白)'}</span>
-                    </label>
-                  ))}
+                  <label className="flex items-center gap-2 px-2 py-1 text-sm border-b">
+                    <input
+                      type="checkbox"
+                      checked={(current?.selected?.length || 0) === 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          // 选中0个表示全选（不过这里约定空数组=不过滤）
+                          (setFilter as any)(col, { type: 'values', selected: [] });
+                        } else {
+                          // 如果从全选切换到非全选，默认清空
+                          (setFilter as any)(col, { type: 'values', selected: [] });
+                        }
+                      }}
+                    />
+                    <span>全选（空=不过滤）</span>
+                  </label>
+                  {list.slice(0, 300).map((val) => {
+                    const isChecked = Array.isArray(current?.selected) ? current.selected.includes(val) : false;
+                    return (
+                      <label key={val} className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-gray-50">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const prev: string[] = Array.isArray(current?.selected) ? current.selected.slice() : [];
+                            if (e.target.checked) {
+                              if (!prev.includes(val)) prev.push(val);
+                            } else {
+                              const idx = prev.indexOf(val);
+                              if (idx >= 0) prev.splice(idx, 1);
+                            }
+                            (setFilter as any)(col, { type: 'values', selected: prev });
+                          }}
+                        />
+                        <span className="truncate" title={val || '(空白)'}>{val || '(空白)'}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               );
             })()}
           </div>
           <div className="flex justify-between mt-2">
-            <button className="px-3 py-1 text-xs border rounded" onClick={() => (clearFilter as any)(headerMenu.col)}>清除筛选</button>
-            <button className="px-3 py-1 text-xs border rounded" onClick={() => setHeaderMenu(null)}>关闭</button>
+            <div className="flex gap-2">
+              <button className="px-3 py-1 text-xs border rounded" onClick={() => (clearFilter as any)(headerMenu.col)}>清除筛选</button>
+            </div>
+            <div className="flex gap-2">
+              <button className="px-3 py-1 text-xs border rounded" onClick={() => setHeaderMenu(null)}>取 消</button>
+              <button className="px-3 py-1 text-xs border rounded bg-blue-600 text-white" onClick={() => setHeaderMenu(null)}>确 认</button>
+            </div>
           </div>
         </div>
       )}
