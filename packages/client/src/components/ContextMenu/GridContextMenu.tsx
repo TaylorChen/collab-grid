@@ -18,11 +18,19 @@ interface GridContextMenuProps {
  * 表格右键上下文菜单 - Luckysheet风格
  */
 export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheetId, userPermission }: GridContextMenuProps) {
-  const { cells, setCell, setStyle, styles } = useGridStore((s) => ({
+  const { 
+    cells, setCell, setStyle, styles, insertRow, deleteRow, insertCol, deleteCol,
+    selection
+  } = useGridStore((s) => ({
     cells: s.cells || {},
     setCell: s.setCell,
     setStyle: s.setStyle,
-    styles: s.styles || {}
+    styles: s.styles || {},
+    insertRow: s.insertRow,
+    deleteRow: s.deleteRow,
+    insertCol: s.insertCol,
+    deleteCol: s.deleteCol,
+    selection: s.selection
   }));
 
   const [showFormatMenu, setShowFormatMenu] = useState(false);
@@ -112,35 +120,143 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
   // 清除格式
   const handleClearFormat = () => {
     setStyle(row, col, {});
-    console.log('🎨 清除格式');
     onClose();
   };
 
   // 插入行
   const handleInsertRow = (position: 'above' | 'below') => {
+    // 权限检查
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法插入行。', 3000);
+      onClose();
+      return;
+    }
+
     console.log(`➕ 插入行 ${position === 'above' ? '上方' : '下方'}`);
-    // TODO: 实现插入行逻辑
+    
+    // 本地更新
+    const where = position === 'above' ? 'before' : 'after';
+    insertRow(row, where, 1);
+    
+    // 发送到服务器
+    const socket = getWS();
+    if (socket) {
+      socket.emit('grid:operation', {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        type: 'grid:row:insert',
+        payload: { at: row, where, count: 1 }
+      });
+      console.log('📡 发送插入行事件:', { row, where });
+    }
+    
     onClose();
   };
 
   // 插入列
   const handleInsertCol = (position: 'left' | 'right') => {
+    // 权限检查
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法插入列。', 3000);
+      onClose();
+      return;
+    }
+
     console.log(`➕ 插入列 ${position === 'left' ? '左侧' : '右侧'}`);
-    // TODO: 实现插入列逻辑
+    
+    // 本地更新
+    const where = position === 'left' ? 'before' : 'after';
+    insertCol(col, where, 1);
+    
+    // 发送到服务器
+    const socket = getWS();
+    if (socket) {
+      socket.emit('grid:operation', {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        type: 'grid:col:insert',
+        payload: { at: col, where, count: 1 }
+      });
+      console.log('📡 发送插入列事件:', { col, where });
+    }
+    
     onClose();
   };
 
   // 删除行
   const handleDeleteRow = () => {
+    // 权限检查
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法删除行。', 3000);
+      onClose();
+      return;
+    }
+
     console.log('🗑️ 删除行');
-    // TODO: 实现删除行逻辑
+    
+    // 确认删除
+    const confirmed = window.confirm(`确定要删除第 ${row + 1} 行吗？此操作不可撤销。`);
+    if (!confirmed) {
+      onClose();
+      return;
+    }
+    
+    // 本地更新
+    deleteRow(row, 1);
+    
+    // 发送到服务器
+    const socket = getWS();
+    if (socket) {
+      socket.emit('grid:operation', {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        type: 'grid:row:delete',
+        payload: { at: row, count: 1 }
+      });
+      console.log('📡 发送删除行事件:', { row });
+    }
+    
     onClose();
   };
 
   // 删除列
   const handleDeleteCol = () => {
+    // 权限检查
+    if (isReadOnly) {
+      toast.warning('您只有只读权限，无法删除列。', 3000);
+      onClose();
+      return;
+    }
+
     console.log('🗑️ 删除列');
-    // TODO: 实现删除列逻辑
+    
+    // 确认删除
+    const colName = String.fromCharCode(65 + col);
+    const confirmed = window.confirm(`确定要删除第 ${colName} 列吗？此操作不可撤销。`);
+    if (!confirmed) {
+      onClose();
+      return;
+    }
+    
+    // 本地更新
+    deleteCol(col, 1);
+    
+    // 发送到服务器
+    const socket = getWS();
+    if (socket) {
+      socket.emit('grid:operation', {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        gridId,
+        sheetId,
+        type: 'grid:col:delete',
+        payload: { at: col, count: 1 }
+      });
+      console.log('📡 发送删除列事件:', { col });
+    }
+    
     onClose();
   };
 
@@ -150,6 +266,8 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
     console.log('⚡ 快速格式化:', format);
     onClose();
   };
+
+  // 已移除合并/取消合并功能
 
   return (
     <div 
@@ -260,6 +378,8 @@ export default function GridContextMenu({ x, y, row, col, onClose, gridId, sheet
       </div>
 
       <div className="border-t border-gray-100 my-1"></div>
+
+      {/* 合并功能已移除 */}
 
       {/* 其他操作 */}
       <div className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center gap-2">

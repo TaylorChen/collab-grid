@@ -28,13 +28,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   const isSheetProtected = () => {
     const isReadOnly = userPermission === 'read';
     const result = isProtected || isReadOnly;
-    console.log('🔒 isSheetProtected被调用:', { 
-      isProtected, 
-      userPermission, 
-      isReadOnly, 
-      result, 
-      sheetId 
-    });
     return result;
   };
   
@@ -45,7 +38,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     }
     return '此工作表受到保护，无法编辑单元格。\n要编辑单元格，请先取消工作表保护。';
   };
-  console.log('🚀 ImprovedGrid rendering!', { gridId, sheetId, isProtected });
 
   // 生成编辑token用于锁机制
   const generateEditToken = () => `edit_${Date.now()}_${Math.random().toString(36).substring(2)}`;
@@ -154,8 +146,11 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   const { 
     rows, cols, cells, styles, rowHeights, colWidths, active, selection,
     freezeRows, freezeCols, setCell, setActive, clearSelection,
-    undo, redo, canUndo, canRedo, history, historyIndex
-  } = useGridStore((s: any) => ({
+    undo, redo, canUndo, canRedo, history, historyIndex, mergedCells, getMergedCell, getCellDisplayValue,
+    mergeCells, unmergeCells
+  } = useGridStore((s: any) => {
+    
+    return {
     rows: s.rows, cols: s.cols, cells: s.cells || {}, styles: s.styles || {},
     rowHeights: s.rowHeights || [], colWidths: s.colWidths || [], 
     active: s.active, selection: s.selection,
@@ -163,12 +158,19 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     setCell: s.setCell, setActive: s.setActive, 
     clearSelection: s.clearSelection || (() => {}), // 添加默认函数防止错误
     undo: s.undo, redo: s.redo, canUndo: s.canUndo, canRedo: s.canRedo,
-    history: s.history || [], historyIndex: s.historyIndex ?? -1
-  }));
+      history: s.history || [], historyIndex: s.historyIndex ?? -1,
+      mergedCells: s.mergedCells || {}, 
+      getMergedCell: s.getMergedCell || (() => null), // 添加默认函数防止错误
+      getCellDisplayValue: s.getCellDisplayValue || ((row: number, col: number) => s.cells?.[`${row}:${col}`] || ''), // 添加默认函数防止错误
+      mergeCells: s.mergeCells,
+      unmergeCells: s.unmergeCells
+    };
+  });
 
   // Realtime state
-  const { lockByCell } = useRealtimeStore((s) => ({
-    lockByCell: s.lockByCell || {}
+  const { lockByCell, presenceByCell } = useRealtimeStore((s: any) => ({
+    lockByCell: s.lockByCell || {},
+    presenceByCell: s.presenceByCell || {}
   }));
 
   // User state
@@ -176,12 +178,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     user: s.user
   }));
   
-  console.log('📊 Store状态:', { 
-    rows, cols, 
-    colWidths: colWidths?.length, 
-    rowHeights: rowHeights?.length,
-    activeSheetId: useGridStore.getState().activeSheetId
-  });
   
   // Local state
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
@@ -200,6 +196,19 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       }
     };
   }, []);
+
+  // 向服务器广播当前激活单元格的存在（presence），帮助其他协作者知晓多人关注/操作同一格
+  useEffect(() => {
+    const socket = getWS();
+    if (!socket) return;
+    const target = editing ?? active;
+    if (!target) return;
+    const cellKey = `${sheetId}:${target.row}:${target.col}`;
+    try {
+      const name = user?.name || user?.displayName || '我';
+      socket.emit('cell:presence', { gridId, sheetId, cellKey, user: { userId: user?.id || 'me', displayName: name } });
+    } catch {}
+  }, [gridId, sheetId, active?.row, active?.col, editing?.row, editing?.col]);
 
   // 监听编辑状态变化，定期续期锁
   useEffect(() => {
@@ -225,11 +234,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer) {
-      console.log('❌ 滚动容器未找到');
       return;
     }
     
-    console.log('📍 设置滚动监听器');
     
     const handleScroll = () => {
       const newScroll = {
@@ -237,17 +244,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         top: scrollContainer.scrollTop
       };
       setScroll(newScroll);
-      console.log('📍 滚动事件:', newScroll);
     };
     
-    // 测试滚动容器状态
-    console.log('📍 滚动容器状态:', {
-      scrollWidth: scrollContainer.scrollWidth,
-      scrollHeight: scrollContainer.scrollHeight,
-      clientWidth: scrollContainer.clientWidth,
-      clientHeight: scrollContainer.clientHeight,
-      overflow: window.getComputedStyle(scrollContainer).overflow
-    });
+    // 测试滚动容器状态已移除
     
     scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
     return () => scrollContainer.removeEventListener('scroll', handleScroll);
@@ -285,7 +284,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     // 自动选择第一个单元格
     if (!active) {
       setActive(0, 0);
-      console.log('🎯 自动选择第一个单元格 A1');
     }
     
     container.addEventListener('click', handleContainerClick);
@@ -293,32 +291,21 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   }, [active, setActive]);
   
   // 计算总尺寸
-  console.log('🔢 计算总尺寸前:', { 
-    cols, rows, 
-    colWidths: colWidths?.length, 
-    rowHeights: rowHeights?.length,
-    firstFewColWidths: colWidths?.slice(0, 5),
-    firstFewRowHeights: rowHeights?.slice(0, 5)
-  });
   
   const totalWidth = colWidths.slice(0, cols).reduce((sum: number, w: number | undefined) => sum + (w ?? CELL_W), 0);
   const totalHeight = rowHeights.slice(0, rows).reduce((sum: number, h: number | undefined) => sum + (h ?? CELL_H), 0);
   
-  console.log('🔢 计算总尺寸后:', { totalWidth, totalHeight });
   
   // 🚨 紧急修复：如果colWidths为空且cols>0，强制初始化
   useEffect(() => {
     if (cols > 0 && colWidths.length === 0) {
-      console.log('🚨 检测到colWidths为空，强制初始化:', { cols, colWidths: colWidths.length, sheetId });
       useGridStore.getState().setActiveSheet(sheetId);
-      console.log('🚨 强制调用setActiveSheet完成');
     }
   }, [cols, colWidths.length, sheetId]);
   
   // 🚨 紧急修复：如果rowHeights为空且rows>0，强制初始化  
   useEffect(() => {
     if (rows > 0 && rowHeights.length === 0) {
-      console.log('🚨 检测到rowHeights为空，强制初始化:', { rows, rowHeights: rowHeights.length, sheetId });
       // setActiveSheet会同时处理rowHeights和colWidths
     }
   }, [rows, rowHeights.length, sheetId]);
@@ -541,14 +528,12 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   useEffect(() => {
     const canvas = mainCanvasRef.current;
     if (!canvas) {
-      console.log('❌ 主Canvas未找到');
       return;
     }
     
     const ctx = canvas.getContext('2d')!;
     const dpr = window.devicePixelRatio || 1;
     
-    console.log('🎨 渲染主Canvas:', { totalWidth, totalHeight });
     
     canvas.width = totalWidth * dpr;
     canvas.height = totalHeight * dpr;
@@ -564,6 +549,11 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     ctx.font = '12px system-ui';
     ctx.textBaseline = 'middle';
     
+    // 记录跳过的单元格（被合并的单元格）
+    const skippedCells = new Set<string>();
+    
+
+    
     let y = 0;
     for (let r = 0; r < rows; r++) {
       const rh = rowHeights[r] ?? CELL_H;
@@ -571,21 +561,43 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       
       for (let c = 0; c < cols; c++) {
         const cw = colWidths[c] ?? CELL_W;
+        const cellKey = `${r}:${c}`;
         
-        // 网格线
+        // 检查是否在合并区域内但不是左上角单元格
+        if (skippedCells.has(cellKey)) {
+          x += cw;
+          continue;
+        }
+        
+        // 合并功能已禁用，所有单元格正常渲染
+        let shouldRender = true;
+        let actualWidth = cw;
+        let actualHeight = rh;
+        
+        // 如果不应该渲染，跳过这个单元格
+        if (!shouldRender) {
+          x += cw;
+          continue;
+        }
+        
+        // 默认网格线（浅色）
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.rect(x + 0.5, y + 0.5, cw - 1, rh - 1);
+        ctx.rect(x + 0.5, y + 0.5, actualWidth - 1, actualHeight - 1);
         ctx.stroke();
         
+        
+        
         // 内容和样式
-        const cellKey = `${r}:${c}`;
-        const value = cells[cellKey];
+        // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+        const value = getCellDisplayValue ? getCellDisplayValue(r, c) : cells[cellKey];
         const style = styles[cellKey];
         
         // 应用背景色
         if (style?.bg) {
           ctx.fillStyle = style.bg;
-          ctx.fillRect(x + 1, y + 1, cw - 2, rh - 2);
+          ctx.fillRect(x + 1, y + 1, actualWidth - 2, actualHeight - 2);
         }
         
         if (value != null && value !== '') {
@@ -601,28 +613,98 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           // 设置文字颜色
           ctx.fillStyle = style?.color || '#000';
           
-          // 计算文字位置
+          // 计算文字位置（适配合并单元格）
           let textX = x + 4;
           if (style?.align === 'center') {
             const textWidth = ctx.measureText(text).width;
-            textX = x + cw / 2 - textWidth / 2;
+            textX = x + actualWidth / 2 - textWidth / 2;
           } else if (style?.align === 'right') {
             const textWidth = ctx.measureText(text).width;
-            textX = x + cw - 4 - textWidth;
+            textX = x + actualWidth - 4 - textWidth;
           }
           
-          ctx.fillText(text, textX, y + rh / 2);
+          ctx.fillText(text, textX, y + actualHeight / 2);
           
           // 绘制下划线
           if (style?.underline) {
             const textWidth = ctx.measureText(text).width;
             ctx.beginPath();
-            ctx.moveTo(textX, y + rh / 2 + 2);
-            ctx.lineTo(textX + textWidth, y + rh / 2 + 2);
+            ctx.moveTo(textX, y + actualHeight / 2 + 2);
+            ctx.lineTo(textX + textWidth, y + actualHeight / 2 + 2);
             ctx.strokeStyle = style?.color || '#000';
             ctx.lineWidth = 1;
             ctx.stroke();
           }
+        }
+        
+        // 绘制自定义边框
+        if (style?.border) {
+          const border = style.border;
+          ctx.save();
+          
+          // 解析边框样式 "1px solid #000000"
+          const parseBorderStyle = (borderStr: string) => {
+            if (!borderStr || borderStr === 'none') return null;
+            const parts = borderStr.split(' ');
+            return {
+              width: parseInt(parts[0]) || 1,
+              color: parts[2] || '#000000'
+            };
+          };
+          
+          // 上边框
+          if (border.top) {
+            const borderStyle = parseBorderStyle(border.top);
+            if (borderStyle) {
+              ctx.strokeStyle = borderStyle.color;
+              ctx.lineWidth = borderStyle.width;
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.lineTo(x + actualWidth, y);
+              ctx.stroke();
+            }
+          }
+          
+          // 右边框
+          if (border.right) {
+            const borderStyle = parseBorderStyle(border.right);
+            if (borderStyle) {
+              ctx.strokeStyle = borderStyle.color;
+              ctx.lineWidth = borderStyle.width;
+              ctx.beginPath();
+              ctx.moveTo(x + actualWidth, y);
+              ctx.lineTo(x + actualWidth, y + actualHeight);
+              ctx.stroke();
+            }
+          }
+          
+          // 下边框
+          if (border.bottom) {
+            const borderStyle = parseBorderStyle(border.bottom);
+            if (borderStyle) {
+              ctx.strokeStyle = borderStyle.color;
+              ctx.lineWidth = borderStyle.width;
+              ctx.beginPath();
+              ctx.moveTo(x, y + actualHeight);
+              ctx.lineTo(x + actualWidth, y + actualHeight);
+              ctx.stroke();
+            }
+          }
+          
+          // 左边框
+          if (border.left) {
+            const borderStyle = parseBorderStyle(border.left);
+            if (borderStyle) {
+              ctx.strokeStyle = borderStyle.color;
+              ctx.lineWidth = borderStyle.width;
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.lineTo(x, y + actualHeight);
+              ctx.stroke();
+            }
+          }
+          
+          ctx.restore();
         }
         
         x += cw;
@@ -720,7 +802,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       ctx.restore();
     }
     
-  }, [cells, styles, colWidths, rowHeights, rows, cols, totalWidth, totalHeight, selection, active, isDragging, dragStart, dragEnd]);
+  }, [cells, styles, colWidths, rowHeights, rows, cols, totalWidth, totalHeight, selection, active, isDragging, dragStart, dragEnd, mergedCells]);
+
   
   // 获取鼠标位置对应的行列
   const getRowColFromMousePos = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -760,15 +843,12 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     setDragEnd({ row, col });
     
     // 清除已有选择
-    console.log('🔍 clearSelection类型:', typeof clearSelection);
     if (typeof clearSelection === 'function') {
       clearSelection();
-      console.log('✅ clearSelection调用成功');
     } else {
       console.warn('⚠️ clearSelection函数不存在');
     }
     
-    console.log('🖱️ 开始拖拽选择:', { row, col });
   };
 
   // 鼠标移动 - 更新拖拽选择区域
@@ -812,16 +892,31 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const endRow = Math.max(dragStart.row, dragEnd.row);
       const startCol = Math.min(dragStart.col, dragEnd.col);
       const endCol = Math.max(dragStart.col, dragEnd.col);
-      
-      console.log('✅ 完成拖拽选择:', {
-        从: `${String.fromCharCode(65 + startCol)}${startRow + 1}`,
-        到: `${String.fromCharCode(65 + endCol)}${endRow + 1}`,
-        区域: `${endRow - startRow + 1}行 × ${endCol - startCol + 1}列`
-      });
     }
     
     setDragStart(null);
     setDragEnd(null);
+  };
+
+  // 🔀 Luckysheet 风格：查找包含指定位置的合并单元格
+  const findMergedCellContaining = (row: number, col: number) => {
+    // 检查是否为合并区域的左上角
+    const directKey = `${row}_${col}`;
+    if (mergedCells[directKey]) {
+      return mergedCells[directKey];
+    }
+    
+    // 检查是否在某个合并区域内
+    for (const cell of Object.values(mergedCells || {})) {
+      const { r, c, rs, cs } = cell;
+      if (
+        row >= r && row < r + rs &&
+        col >= c && col < c + cs
+      ) {
+        return cell;
+      }
+    }
+    return null;
   };
 
   // 简化的点击事件 - 主要用于非拖拽的单击
@@ -829,28 +924,31 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     // 如果刚完成拖拽，不触发点击
     if (isDragging) return;
     
-    console.log('🖱️ 单击事件 (非拖拽)');
     
     // 使用新的统一方法获取行列
     const { row, col } = getRowColFromMousePos(e);
     
     if (row < rows && col < cols) {
+      // 🔀 检查点击位置是否在合并单元格内
+      const mergedCell = findMergedCellContaining(row, col);
+      
+      if (mergedCell) {
+        // 点击了合并单元格区域，激活主单元格（左上角）
+        setActive(mergedCell.r, mergedCell.c);
+      } else {
+        // 正常单元格
       setActive(row, col);
-      console.log('✅ 设置活动单元格:', { row, col });
+      }
     } else {
-      console.log('❌ 坐标超出范围');
     }
   };
   
   // 双击编辑
   const handleMainDoubleClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    console.log('🖱️ Canvas双击事件触发');
     
     // 检查Sheet是否受保护
     const protectedStatus = isSheetProtected();
-    console.log('🔒 双击编辑保护检查:', { sheetId, isProtected, protectedStatus });
     if (protectedStatus) {
-      console.log('🔒 编辑被禁止:', { isProtected, userPermission });
       toast.warning(getProtectionMessage(), 4000);
       return;
     }
@@ -872,12 +970,23 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       row++;
     }
     
-    console.log('🖱️ 双击计算得到单元格:', { row, col });
     
     if (row < rows && col < cols) {
-      // 检查单元格是否被锁定
-      if (isCellLocked(row, col)) {
-        const lockHolder = getCellLockHolder(row, col);
+      // 🔀 检查双击位置是否在合并单元格内
+      const mergedCell = findMergedCellContaining(row, col);
+      
+      let editRow = row;
+      let editCol = col;
+      
+      if (mergedCell) {
+        // 双击了合并单元格区域，编辑主单元格（左上角）
+        editRow = mergedCell.r;
+        editCol = mergedCell.c;
+      }
+      
+      // 检查单元格是否被锁定（使用实际要编辑的单元格坐标）
+      if (isCellLocked(editRow, editCol)) {
+        const lockHolder = getCellLockHolder(editRow, editCol);
         if (lockHolder?.displayName || lockHolder?.name) {
           toast.warning(`${lockHolder.displayName || lockHolder.name} 正在编辑此单元格`, 3000);
         } else {
@@ -886,18 +995,16 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         return;
       }
 
-      // 尝试获取锁
-      const lockAcquired = await acquireCellLock(row, col);
+      // 尝试获取锁（使用实际要编辑的单元格坐标）
+      const lockAcquired = await acquireCellLock(editRow, editCol);
       if (!lockAcquired) {
-        console.log('🔒 获取单元格锁失败');
         return;
       }
 
       // 锁获取成功，开始编辑
-      const cellKey = `${row}:${col}`;
-      const currentValue = cells[cellKey] || '';
-      setEditing({ row, col, value: String(currentValue) });
-      console.log('✏️ 开始编辑:', { row, col, value: currentValue });
+      // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+      const currentValue = getCellDisplayValue(editRow, editCol) || '';
+      setEditing({ row: editRow, col: editCol, value: String(currentValue) });
     }
   };
   
@@ -907,7 +1014,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     
     // 检查Sheet是否受保护
     if (isSheetProtected()) {
-      console.log('🔒 编辑提交被禁止:', { isProtected, userPermission });
       toast.warning(getProtectionMessage(), 4000);
       // 释放锁
       releaseCellLock(editing.row, editing.col);
@@ -929,7 +1035,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         type: "cell:update",
         payload: { row: editing.row, col: editing.col, value: editing.value }
       });
-      console.log('📡 发送WebSocket保存事件:', { row: editing.row, col: editing.col, value: editing.value });
     } else {
       console.warn('⚠️ WebSocket未连接，无法保存到服务器');
     }
@@ -938,7 +1043,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     releaseCellLock(editing.row, editing.col);
     
     setEditing(null);
-    console.log('💾 提交编辑:', editing);
   };
   
   // 复制选中内容到剪贴板
@@ -947,8 +1051,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     
     if (selection?.type === 'cell' && selection.row !== undefined && selection.col !== undefined) {
       // 单个单元格
-      const cellKey = `${selection.row}:${selection.col}`;
-      textToCopy = String(cells[cellKey] || '');
+      // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+      textToCopy = String(getCellDisplayValue(selection.row, selection.col) || '');
     } else if (selection?.type === 'multi' && selection.selectedCells) {
       // 多选单元格 - 按行列顺序组织
       const cellArray: string[][] = [];
@@ -971,7 +1075,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         for (let c = minCol; c <= maxCol; c++) {
           const cellKey = `${r}:${c}`;
           if (selection.selectedCells.has(cellKey)) {
-            row.push(String(cells[cellKey] || ''));
+            // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+            row.push(String(getCellDisplayValue(r, c) || ''));
           } else {
             row.push(''); // 空单元格
           }
@@ -985,16 +1090,16 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       // 整行
       const row: string[] = [];
       for (let c = 0; c < cols; c++) {
-        const cellKey = `${selection.row}:${c}`;
-        row.push(String(cells[cellKey] || ''));
+        // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+        row.push(String(getCellDisplayValue(selection.row, c) || ''));
       }
       textToCopy = row.join('\t');
     } else if (selection?.type === 'col' && selection.col !== undefined) {
       // 整列
       const col: string[] = [];
       for (let r = 0; r < rows; r++) {
-        const cellKey = `${r}:${selection.col}`;
-        col.push(String(cells[cellKey] || ''));
+        // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+        col.push(String(getCellDisplayValue(r, selection.col) || ''));
       }
       textToCopy = col.join('\n');
     }
@@ -1002,7 +1107,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     if (textToCopy) {
       try {
         await navigator.clipboard.writeText(textToCopy);
-        console.log('📋 复制成功:', textToCopy.length > 50 ? textToCopy.substring(0, 50) + '...' : textToCopy);
         
         // 显示复制反馈
         showNotification('已复制到剪贴板', 'success');
@@ -1024,7 +1128,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const text = await navigator.clipboard.readText();
       if (!text) return;
       
-      console.log('📌 粘贴内容:', text.length > 50 ? text.substring(0, 50) + '...' : text);
       
       // 解析粘贴内容
       const lines = text.split('\n');
@@ -1125,9 +1228,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           (async () => {
             const lockAcquired = await acquireCellLock(active.row, active.col);
             if (lockAcquired) {
-              const cellKey = `${active.row}:${active.col}`;
-              const currentValue = cells[cellKey] || '';
-              setEditing({ row: active.row, col: active.col, value: String(currentValue) });
+              // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
+              const currentValue = getCellDisplayValue(active.row, active.col) || '';
+          setEditing({ row: active.row, col: active.col, value: String(currentValue) });
             }
           })();
           return;
@@ -1220,7 +1323,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
             (async () => {
               const lockAcquired = await acquireCellLock(active.row, active.col);
               if (lockAcquired) {
-                setEditing({ row: active.row, col: active.col, value: e.key });
+            setEditing({ row: active.row, col: active.col, value: e.key });
               }
             })();
             return;
@@ -1287,7 +1390,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         row,
         col
       });
-      console.log('🖱️ 右键菜单:', { row, col, x: e.clientX, y: e.clientY });
     }
   };
   
@@ -1349,7 +1451,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       setIsDragging(false);
       setDragStart(null);
       setDragEnd(null);
-      console.log('🔗 全局鼠标释放 - 拖拽结束');
     };
 
     document.addEventListener('mousemove', handleGlobalMouseMove);
@@ -1374,7 +1475,6 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           bottom: 0,
         }}
         onScroll={(e) => {
-          console.log('📍 内联滚动事件:', e.currentTarget.scrollLeft, e.currentTarget.scrollTop);
         }}
       >
         {/* 滚动区域占位 - 确保有足够内容可滚动 */}
@@ -1495,7 +1595,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           </div>
         );
       })}
-
+      
       {/* 编辑框 */}
       {editing && (
         <input
@@ -1526,310 +1626,114 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
               for (let r = 0; r < editing.row; r++) y += (rowHeights[r] ?? CELL_H);
               return y - scroll.top;
             })(),
-            width: (colWidths[editing.col] ?? CELL_W) - 4,
+            // 🔀 对于合并单元格，编辑框应该跨越整个合并区域
+            width: (() => {
+              // 检查当前编辑位置是否是合并单元格的主单元格
+              const mergedCell = findMergedCellContaining(editing.row, editing.col);
+              if (mergedCell) {
+                // 计算合并区域的总宽度
+                let totalWidth = 0;
+                const startCol = mergedCell.startCol || mergedCell.c || editing.col;
+                const endCol = mergedCell.endCol || (mergedCell.c + mergedCell.cs - 1) || editing.col;
+                for (let c = startCol; c <= endCol; c++) {
+                  totalWidth += colWidths[c] ?? CELL_W;
+                }
+                return totalWidth - 4;
+              }
+              return (colWidths[editing.col] ?? CELL_W) - 4;
+            })(),
             height: (rowHeights[editing.row] ?? CELL_H) - 4,
           }}
         />
       )}
       
-      {/* 活动单元格高亮边框 */}
+      {/* 活动单元格高亮边框 - 支持合并单元格 */}
       {active && !editing && (
+        (() => {
+          // 🔀 检查活动单元格是否在合并区域内
+          const mergedCell = findMergedCellContaining(active.row, active.col);
+          
+          let displayRow = active.row;
+          let displayCol = active.col;
+          let displayWidth = colWidths[active.col] ?? CELL_W;
+          let displayHeight = rowHeights[active.row] ?? CELL_H;
+          
+          if (mergedCell) {
+            // 如果是合并单元格，高亮整个合并区域
+            const startRow = mergedCell.startRow || mergedCell.r || active.row;
+            const startCol = mergedCell.startCol || mergedCell.c || active.col;
+            const endRow = mergedCell.endRow || (mergedCell.r + mergedCell.rs - 1) || active.row;
+            const endCol = mergedCell.endCol || (mergedCell.c + mergedCell.cs - 1) || active.col;
+            
+            displayRow = startRow;
+            displayCol = startCol;
+            
+            // 计算合并区域的总尺寸
+            displayWidth = 0;
+            for (let c = startCol; c <= endCol; c++) {
+              displayWidth += colWidths[c] ?? CELL_W;
+            }
+            displayHeight = 0;
+            for (let r = startRow; r <= endRow; r++) {
+              displayHeight += rowHeights[r] ?? CELL_H;
+            }
+          }
+          
+          return (
         <div
           className="absolute border-2 border-blue-500 pointer-events-none z-40"
           style={{
             left: HEADER_W + (() => {
               let x = 0;
-              for (let c = 0; c < active.col; c++) x += (colWidths[c] ?? CELL_W);
+                  for (let c = 0; c < displayCol; c++) x += (colWidths[c] ?? CELL_W);
               return x - scroll.left;
             })(),
             top: HEADER_H + (() => {
               let y = 0;
-              for (let r = 0; r < active.row; r++) y += (rowHeights[r] ?? CELL_H);
+                  for (let r = 0; r < displayRow; r++) y += (rowHeights[r] ?? CELL_H);
               return y - scroll.top;
             })(),
-            width: (colWidths[active.col] ?? CELL_W),
-            height: (rowHeights[active.row] ?? CELL_H),
-          }}
-        />
+                width: displayWidth,
+                height: displayHeight,
+              }}
+            />
+          );
+        })()
       )}
 
-      {/* 调试信息和测试控制 */}
-      <div className="absolute top-2 right-2 bg-blue-100 p-3 rounded text-xs z-50 space-y-2">
-        <div className="font-bold">📊 ImprovedGrid调试</div>
-        <div>滚动: {scroll.left}, {scroll.top}</div>
-        <div>容器: {containerSize.width}×{containerSize.height}</div>
-        <div>总尺寸: {totalWidth}×{totalHeight} (cols:{cols}, colWidths:{colWidths.length})</div>
-        <div className="text-xs">Sheet:{sheetId}, activeSheetId:{useGridStore.getState().activeSheetId}</div>
-        <div>冻结: {freezeRows}行 {freezeCols}列</div>
-        {active && <div>活动: {active.row}:{active.col}</div>}
-        {editing && <div>✏️ 编辑: {editing.row}:{editing.col}</div>}
-        <div>历史: {historyIndex + 1}/{history.length} (可撤销: {historyIndex >= 0 ? '是' : '否'}, 可重做: {historyIndex < history.length - 1 ? '是' : '否'})</div>
-        <div className="text-xs text-gray-500">
-          historyIndex: {historyIndex}, history.length: {history.length}
-        </div>
-        {history.length > 0 && (
-          <div className="text-green-600">
-            最近: {history[historyIndex]?.description || '无'}
+
+      {/* 合并测试按钮已移除 */}
+
+      {/* 多人关注同一单元格的悬浮提示（presence） */}
+      {(() => {
+        const target = editing ?? active;
+        if (!target) return null;
+        const key = `${sheetId}:${target.row}:${target.col}`;
+        const users: any[] = (presenceByCell as any)[key] || [];
+        // 过滤当前用户，仅显示其他人
+        const others = users.filter((u) => u?.userId && u.userId !== user?.id);
+        if (others.length === 0) return null;
+
+        // 计算该单元格的位置用于定位提示
+        let x = HEADER_W;
+        for (let c = 0; c < target.col; c++) x += (colWidths[c] ?? CELL_W);
+        let y = HEADER_H;
+        for (let r = 0; r < target.row; r++) y += (rowHeights[r] ?? CELL_H);
+        x = x - scroll.left;
+        y = y - scroll.top;
+
+        const label = others.length === 1 ? `${others[0].displayName || '协作者'} 也在此` : `${others.length} 人也在此`;
+
+        return (
+          <div
+            className="absolute text-xs px-2 py-1 rounded bg-gray-900/90 text-white shadow"
+            style={{ left: x + (colWidths[target.col] ?? CELL_W) - 4, top: y - 20, transform: 'translateX(-100%)' }}
+          >
+            {label}
           </div>
-        )}
-        
-        <div className="space-y-1 pt-2 border-t">
-          <button 
-            onClick={() => {
-              console.log('🧪 手动触发滚动测试');
-              const container = scrollContainerRef.current;
-              if (container) {
-                container.scrollTo(100, 100);
-                console.log('🧪 滚动到 100,100');
-              }
-            }}
-            className="w-full px-2 py-1 bg-green-500 text-white rounded text-xs"
-          >
-            测试滚动
-          </button>
-          
-          <button 
-            onClick={() => {
-              console.log('🧪 手动设置活动单元格');
-              setActive(2, 3);
-            }}
-            className="w-full px-2 py-1 bg-purple-500 text-white rounded text-xs"
-          >
-            测试选择C3
-          </button>
-          
-          <button 
-            onClick={() => {
-              console.log('🧪 手动开始编辑');
-              setEditing({ row: 1, col: 1, value: 'TEST' });
-            }}
-            className="w-full px-2 py-1 bg-orange-500 text-white rounded text-xs"
-          >
-            测试编辑B2
-          </button>
-          
-          <button 
-            onClick={() => {
-              console.log('🧪 手动修改数据测试历史');
-              console.log('🧪 setCell函数类型:', typeof setCell);
-              console.log('🧪 当前cells状态:', cells);
-              console.log('🧪 当前history状态:', history);
-              console.log('🧪 当前historyIndex:', historyIndex);
-              const randomValue = Math.random().toString(36).substring(7);
-              const newValue = `测试${randomValue}`;
-              console.log('🧪 准备设置值:', newValue);
-              
-              // 手动实现带历史记录的setCell
-              console.log('🧪 手动实现带历史记录的setCell:');
-              const store = useGridStore.getState();
-              const key = `0:0`;
-              const oldValue = (store.cells || {})[key];
-              console.log('🧪 oldValue:', oldValue, 'newValue:', newValue);
-              
-              if (oldValue !== newValue) {
-                // 创建历史记录
-                const historyEntry = {
-                  type: 'cell_change' as const,
-                  timestamp: Date.now(),
-                  changes: [{
-                    row: 0,
-                    col: 0,
-                    oldValue,
-                    newValue
-                  }],
-                  description: `手动编辑单元格 A1`
-                };
-                
-                // 更新状态
-                const currentHistory = store.history || [];
-                const currentIndex = store.historyIndex ?? -1;
-                const newHistory = currentHistory.slice(0, currentIndex + 1);
-                newHistory.push(historyEntry);
-                
-                console.log('🧪 历史记录信息:', {
-                  currentHistory: currentHistory.length,
-                  currentIndex,
-                  newHistoryLength: newHistory.length
-                });
-                
-                useGridStore.setState({
-                  cells: { ...(store.cells || {}), [key]: newValue },
-                  history: newHistory,
-                  historyIndex: newHistory.length - 1
-                });
-                
-                console.log('🧪 手动创建历史记录成功');
-              } else {
-                console.log('🧪 值未变化，不创建历史记录');
-              }
-              
-              // 延迟检查状态
-              setTimeout(() => {
-                const state = useGridStore.getState();
-                console.log('🧪 延迟检查状态:', {
-                  historyLength: state.history?.length || 0,
-                  historyIndex: state.historyIndex || -1,
-                  cellValue: state.cells?.['0:0'] || 'undefined',
-                  stateKeys: Object.keys(state)
-                });
-              }, 100);
-            }}
-            className="w-full px-2 py-1 bg-teal-500 text-white rounded text-xs"
-          >
-            修改A1测试历史
-          </button>
-          
-          <button 
-            onClick={() => {
-              console.log('🧪 直接添加历史记录测试');
-              const randomValue = Math.random().toString(36).substring(7);
-              const historyEntry = {
-                type: 'cell_change' as const,
-                timestamp: Date.now(),
-                changes: [{
-                  row: 0,
-                  col: 0,
-                  oldValue: cells['0:0'],
-                  newValue: `直接${randomValue}`
-                }],
-                description: `直接添加历史测试`
-              };
-              // 直接调用store的addToHistory方法
-              const store = useGridStore.getState();
-              if (typeof store.addToHistory === 'function') {
-                store.addToHistory(historyEntry);
-                console.log('🧪 直接添加历史记录成功');
-              } else {
-                console.log('❌ addToHistory方法不存在');
-              }
-            }}
-            className="w-full px-2 py-1 bg-pink-500 text-white rounded text-xs"
-          >
-            直接添加历史测试
-          </button>
-          
-          <button 
-            onClick={() => {
-              console.log('🧪 强制检查canUndo状态');
-              const store = useGridStore.getState();
-              // 手动检查canUndo逻辑
-              const historyLength = (store.history || []).length;
-              const historyIndex = store.historyIndex ?? -1;
-              const manualCanUndo = historyIndex >= 0;
-              const manualCanRedo = historyIndex < historyLength - 1;
-              
-              console.log('🧪 当前store状态:', {
-                historyLength,
-                historyIndex,
-                canUndoResult: store.canUndo ? store.canUndo() : 'function not found',
-                manualCanUndo,
-                manualCanRedo
-              });
-              // 强制重新渲染
-              useGridStore.setState({});
-            }}
-            className="w-full px-2 py-1 bg-cyan-500 text-white rounded text-xs"
-          >
-            检查canUndo状态
-          </button>
-          
-          <div className="flex space-x-1">
-            <button 
-              onClick={() => {
-                console.log('🔍 撤销按钮被点击');
-                console.log('🔍 当前历史状态:', { history: history.length, historyIndex });
-                
-                if (historyIndex >= 0 && history[historyIndex]) {
-                  const entry = history[historyIndex];
-                  console.log('⏪ 执行撤销:', entry.description);
-                  
-                  // 手动实现撤销逻辑
-                  const store = useGridStore.getState();
-                  const currentCells = store.cells || {};
-                  
-                  // 应用撤销
-                  entry.changes.forEach((change: any) => {
-                    const key = `${change.row}:${change.col}`;
-                    if (change.oldValue !== undefined) {
-                      currentCells[key] = change.oldValue;
-                    } else {
-                      delete currentCells[key];
-                    }
-                  });
-                  
-                  // 更新状态
-                  useGridStore.setState({
-                    cells: { ...currentCells },
-                    historyIndex: historyIndex - 1
-                  });
-                  
-                  console.log('✅ 手动撤销完成');
-                  showNotification('已撤销', 'success');
-                } else {
-                  console.log('❌ 无法撤销');
-                  showNotification('无法撤销', 'warning');
-                }
-              }}
-              disabled={!(historyIndex >= 0)}
-              className={`flex-1 px-2 py-1 rounded text-xs ${
-                (historyIndex >= 0) 
-                  ? 'bg-red-500 text-white hover:bg-red-600' 
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              ⏪ 撤销
-            </button>
-            <button 
-              onClick={() => {
-                console.log('🔍 重做按钮被点击');
-                console.log('🔍 当前历史状态:', { history: history.length, historyIndex });
-                
-                if (historyIndex < history.length - 1) {
-                  const targetIndex = historyIndex + 1;
-                  const entry = history[targetIndex];
-                  console.log('⏩ 执行重做:', entry.description);
-                  
-                  // 手动实现重做逻辑
-                  const store = useGridStore.getState();
-                  const currentCells = store.cells || {};
-                  
-                  // 应用重做
-                  entry.changes.forEach((change: any) => {
-                    const key = `${change.row}:${change.col}`;
-                    if (change.newValue !== undefined) {
-                      currentCells[key] = change.newValue;
-                    } else {
-                      delete currentCells[key];
-                    }
-                  });
-                  
-                  // 更新状态
-                  useGridStore.setState({
-                    cells: { ...currentCells },
-                    historyIndex: targetIndex
-                  });
-                  
-                  console.log('✅ 手动重做完成');
-                  showNotification('已重做', 'success');
-                } else {
-                  console.log('❌ 无法重做');
-                  showNotification('无法重做', 'warning');
-                }
-              }}
-              disabled={!(historyIndex < history.length - 1)}
-              className={`flex-1 px-2 py-1 rounded text-xs ${
-                (historyIndex < history.length - 1) 
-                  ? 'bg-blue-500 text-white hover:bg-blue-600' 
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              ⏩ 重做
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      {/* 右键上下文菜单 */}
+        );
+      })()}
+
       {contextMenu && (
         <GridContextMenu
           x={contextMenu.x}
@@ -1842,7 +1746,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           userPermission={userPermission}
         />
       )}
+
     </div>
   );
 }
-

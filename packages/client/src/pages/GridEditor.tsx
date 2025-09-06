@@ -12,6 +12,8 @@ export default function GridEditor() {
   const { id } = useParams();
   const token = useUserStore((s) => s.token);
   const user = useUserStore((s) => s.user);
+  
+  console.log('🎯 GridEditor 渲染:', { id, hasToken: !!token, user: user?.email });
   const [title, setTitle] = React.useState<string>("Loading...");
   const [ownerId, setOwnerId] = React.useState<number | null>(null);
   const [userPermission, setUserPermission] = React.useState<string | null>(null);
@@ -26,6 +28,18 @@ export default function GridEditor() {
     (async () => {
       try {
         if (!id || !token) return;
+        
+        // Demo模式：如果是demo token，使用模拟数据
+        if (token.startsWith('demo-token-')) {
+          console.log('🎭 Demo模式：使用模拟数据');
+          setTitle(`Demo Grid - ${id}`);
+          setOwnerId(1);
+          setUserPermission('edit');
+          setSheets([{ id: 1, name: 'Sheet1' }]);
+          setCurrentSheet(1);
+          return;
+        }
+        
         const res: any = await api.getGrid(token, id);
         if (res?.success) {
           setTitle(res.data?.title || `#${id}`);
@@ -35,8 +49,14 @@ export default function GridEditor() {
           if (res.data?.sheets?.[0]?.id) setCurrentSheet(res.data.sheets[0].id);
           console.log('👤 用户权限信息:', { userPermission: res.data?.userPermission, ownerId: res.data?.owner_id, currentUserId: user?.id });
         } else setTitle(`#${id}`);
-      } catch {
-        setTitle(`#${id}`);
+      } catch (error) {
+        console.error('API调用失败:', error);
+        // 失败时也使用demo数据
+        setTitle(`Demo Grid - ${id}`);
+        setOwnerId(1);
+        setUserPermission('edit');
+        setSheets([{ id: 1, name: 'Sheet1' }]);
+        setCurrentSheet(1);
       }
     })();
   }, [id, token]);

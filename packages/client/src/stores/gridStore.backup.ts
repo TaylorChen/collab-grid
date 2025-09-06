@@ -35,12 +35,12 @@ interface HistoryEntry {
 	description: string;
 }
 
-// 参考 Luckysheet 的合并单元格数据结构
 interface MergedCell {
-	r: number;     // 合并区域左上角行索引  
-	c: number;     // 合并区域左上角列索引
-	rs: number;    // 合并的行数（row span）
-	cs: number;    // 合并的列数（column span）
+	startRow: number;
+	startCol: number;
+	endRow: number;
+	endCol: number;
+	value?: any;
 }
 
 interface GridState {
@@ -50,7 +50,7 @@ interface GridState {
 	formulas: Record<string, string>; // 存储原始公式
 	computedValues: Record<string, any>; // 存储计算结果
 	styles: Record<string, CellStyle>;
-	mergedCells: Record<string, MergedCell>; // key: "row_col" (Luckysheet format)
+	mergedCells: Record<string, MergedCell>; // key: "startRow:startCol"
 	active: { row: number; col: number } | null;
 	// 选择状态：支持单元格、整行、整列选择
 	selection: {
@@ -113,7 +113,7 @@ interface GridState {
 	deleteRow: (at: number, count?: number) => void;
 	insertCol: (at: number, where: 'before' | 'after', count?: number) => void;
 	deleteCol: (at: number, count?: number) => void;
-	// 合并单元格函数（已禁用）
+	// 合并单元格函数
 	mergeCells: (startRow: number, startCol: number, endRow: number, endCol: number) => void;
 	unmergeCells: (startRow: number, startCol: number) => void;
 	getMergedCell: (row: number, col: number) => MergedCell | null;
@@ -151,13 +151,20 @@ export const useGridStore = create<GridState>((set, get) => ({
 	history: [],
 	historyIndex: -1,
 
-	// 设置单元格值
 	setCell: (row, col, value) =>
 		set((s) => {
+			console.log('📝 setCell调用:', { row, col, value });
 			const key = cellKey(row, col);
 			const oldValue = s.cells[key];
-			if (oldValue === value) return s;
+			console.log('📝 setCell老值:', oldValue, '新值:', value);
 			
+			// 如果值没有变化，不记录历史
+			if (oldValue === value) {
+				console.log('📝 值未变化，不记录历史');
+				return s;
+			}
+			
+			// 记录历史
 			const historyEntry: HistoryEntry = {
 				type: 'cell_change',
 				timestamp: Date.now(),
@@ -170,9 +177,13 @@ export const useGridStore = create<GridState>((set, get) => ({
 				description: `编辑单元格 ${String.fromCharCode(65 + col)}${row + 1}`
 			};
 			
+			// 添加到历史
 			const newHistory = s.history.slice(0, s.historyIndex + 1);
 			newHistory.push(historyEntry);
+			console.log('📝 添加历史记录:', historyEntry);
+			console.log('📝 新历史长度:', newHistory.length);
 			
+			// 限制历史记录数量（最多50条）
 			if (newHistory.length > 50) {
 				newHistory.shift();
 			}
@@ -185,10 +196,17 @@ export const useGridStore = create<GridState>((set, get) => ({
 				historyIndex: newHistory.length - 1
 			};
 			
+			// 如果值以=开头，将其作为公式处理
 			if (typeof value === 'string' && value.startsWith('=')) {
 				newState.formulas = { ...s.formulas, [key]: value };
+				
+				// TODO: 临时禁用公式计算来调试
+				// const engine = new FormulaEngine(s.cells);
+				// const result = engine.evaluate(value);
+				// newState.computedValues = { ...s.computedValues, [key]: result.value };
 				newState.computedValues = { ...s.computedValues, [key]: value };
 			} else {
+				// 清除公式记录
 				const { [key]: removed, ...restFormulas } = s.formulas;
 				const { [key]: removedComputed, ...restComputed } = s.computedValues;
 				newState.formulas = restFormulas;
@@ -201,6 +219,10 @@ export const useGridStore = create<GridState>((set, get) => ({
 	setCellFormula: (row, col, formula) =>
 		set((s) => {
 			const key = cellKey(row, col);
+			// TODO: 临时禁用公式计算来调试
+			// const engine = new FormulaEngine(s.cells);
+			// const result = engine.evaluate(formula);
+			
 			return {
 				formulas: { ...s.formulas, [key]: formula },
 				computedValues: { ...s.computedValues, [key]: formula },
@@ -210,11 +232,15 @@ export const useGridStore = create<GridState>((set, get) => ({
 
 	recalculateFormulas: () =>
 		set((s) => {
+			// TODO: 临时禁用公式计算来调试
+			// const engine = new FormulaEngine(s.cells);
 			const newComputedValues = { ...s.computedValues };
 			const newCells = { ...s.cells };
 			
+			// 重新计算所有公式 - 临时禁用
 			Object.entries(s.formulas).forEach(([key, formula]) => {
-				newComputedValues[key] = formula;
+				// const result = engine.evaluate(formula);
+				newComputedValues[key] = formula; // 临时直接返回公式文本
 				newCells[key] = formula;
 			});
 			
@@ -228,12 +254,12 @@ export const useGridStore = create<GridState>((set, get) => ({
 		const state = get();
 		const key = cellKey(row, col);
 		
+		// 如果有计算值，返回计算值，否则返回原始值
 		if (key in state.computedValues) {
 			return state.computedValues[key];
 		}
 		return state.cells[key];
 	},
-
 	setStyle: (row, col, patch) =>
 		set((s) => ({ styles: { ...s.styles, [cellKey(row, col)]: { ...s.styles[cellKey(row, col)], ...patch } } })),
 	setActive: (row, col) => set({ active: { row, col } }),
@@ -376,6 +402,7 @@ export const useGridStore = create<GridState>((set, get) => ({
 		return { rows, cols, rowHeights: nextHeights, colWidths: nextWidths };
 	}),
 	setActiveSheet: (sheetId) => set((s) => {
+		console.log('🔄 setActiveSheet调用:', { sheetId, currentRows: s.rows, currentCols: s.cols, currentColWidths: s.colWidths?.length });
 		
 		// 确保新Sheet有默认的行高和列宽
 		const defaultRowHeights = Array(s.rows).fill(24);
@@ -384,10 +411,26 @@ export const useGridStore = create<GridState>((set, get) => ({
 		const rh = s.rowHeightsBySheet[sheetId] ?? (s.rowHeights?.length > 0 ? s.rowHeights : defaultRowHeights);
 		const cw = s.colWidthsBySheet[sheetId] ?? (s.colWidths?.length > 0 ? s.colWidths : defaultColWidths);
 		
+		console.log('🔄 setActiveSheet结果:', { 
+			sheetId, 
+			newRowHeights: rh.length, 
+			newColWidths: cw.length, 
+			fromSheetSpecific: !!s.colWidthsBySheet[sheetId],
+			fromCurrent: s.colWidths?.length > 0,
+			useDefault: s.colWidths?.length === 0
+		});
+		
 		// 最终确保colWidths长度与cols匹配
 		const finalColWidths = cw.length === s.cols ? cw.slice() : defaultColWidths;
 		const finalRowHeights = rh.length === s.rows ? rh.slice() : defaultRowHeights;
 		
+		console.log('🔄 最终设置:', { 
+			sheetId, 
+			finalRowHeights: finalRowHeights.length, 
+			finalColWidths: finalColWidths.length,
+			cols: s.cols,
+			rows: s.rows
+		});
 		
 		return { activeSheetId: sheetId, rowHeights: finalRowHeights, colWidths: finalColWidths };
 	}),
@@ -465,11 +508,14 @@ export const useGridStore = create<GridState>((set, get) => ({
 		const state = get();
 		const historyIndex = state.historyIndex ?? -1;
 		const history = state.history || [];
+		console.log('⏪ undo被调用，当前状态:', { historyIndex, historyLength: history.length });
 		if (historyIndex < 0) {
+			console.log('⏪ 无法撤销，historyIndex < 0');
 			return false;
 		}
 		
 		const entry = history[historyIndex];
+		console.log('⏪ 撤销操作:', entry.description, entry);
 		
 		set((s) => {
 			const newState = { ...s };
@@ -507,6 +553,7 @@ export const useGridStore = create<GridState>((set, get) => ({
 		if (state.historyIndex >= state.history.length - 1) return false;
 		
 		const entry = state.history[state.historyIndex + 1];
+		console.log('⏩ 重做操作:', entry.description);
 		
 		set((s) => {
 			const newState = { ...s };
@@ -741,24 +788,120 @@ export const useGridStore = create<GridState>((set, get) => ({
 		});
 	},
 
-	// 📋 合并单元格功能已禁用
-	mergeCells(startRow: number, startCol: number, endRow: number, endCol: number) {
-		console.log("⚠️ mergeCells 功能已禁用");
-		return;
-	},	
-	// 📋 参考 Luckysheet 的 cancelRangeMerge 函数重新实现取消合并逻辑
-	unmergeCells(startRow: number, startCol: number) {
-		console.log("⚠️ unmergeCells 功能已禁用");
-		return;
-	},	
-	// 🔀 Luckysheet 风格的合并单元格检测
-	getMergedCell(row: number, col: number) {
+	// 合并单元格实现
+	mergeCells: function(startRow: number, startCol: number, endRow: number, endCol: number) {
+		set((s) => {
+			// 确保参数顺序正确
+			const minRow = Math.min(startRow, endRow);
+			const maxRow = Math.max(startRow, endRow);
+			const minCol = Math.min(startCol, endCol);
+			const maxCol = Math.max(startCol, endCol);
+			
+			const mergeKey = `${minRow}:${minCol}`;
+			
+			// 检查是否与现有合并区域冲突
+			for (const [key, existing] of Object.entries(s.mergedCells)) {
+				const overlaps = !(
+					maxRow < existing.startRow || 
+					minRow > existing.endRow ||
+					maxCol < existing.startCol || 
+					minCol > existing.endCol
+				);
+				if (overlaps) {
+					console.warn('合并区域与现有合并单元格冲突:', key, existing);
+					return s; // 不执行合并
+				}
+			}
+			
+			// 收集合并区域内的所有值，保留左上角的值
+			const topLeftKey = `${minRow}:${minCol}`;
+			const topLeftValue = s.cells[topLeftKey] || '';
+			
+			// 创建合并单元格
+			const mergedCell: MergedCell = {
+				startRow: minRow,
+				startCol: minCol,
+				endRow: maxRow,
+				endCol: maxCol,
+				value: topLeftValue
+			};
+			
+			// 清除合并区域内其他单元格的值（保留左上角）
+			const newCells = { ...s.cells };
+			const newStyles = { ...s.styles };
+			
+			for (let row = minRow; row <= maxRow; row++) {
+				for (let col = minCol; col <= maxCol; col++) {
+					const cellKey = `${row}:${col}`;
+					if (cellKey !== topLeftKey) {
+						delete newCells[cellKey];
+						// 样式可以保留或清除，这里选择清除
+						delete newStyles[cellKey];
+					}
+				}
+			}
+			
+			return {
+				mergedCells: { ...s.mergedCells, [mergeKey]: mergedCell },
+				cells: newCells,
+				styles: newStyles
+			};
+		});
+	},
+
+	unmergeCells: function(startRow: number, startCol: number) {
+		set((s) => {
+			const mergeKey = `${startRow}:${startCol}`;
+			const mergedCell = s.mergedCells[mergeKey];
+			
+			if (!mergedCell) {
+				console.warn('未找到要取消的合并单元格:', mergeKey);
+				return s;
+			}
+			
+			// 恢复合并单元格的值到左上角
+			const newCells = { ...s.cells };
+			const topLeftKey = `${mergedCell.startRow}:${mergedCell.startCol}`;
+			newCells[topLeftKey] = mergedCell.value || '';
+			
+			// 移除合并信息
+			const newMergedCells = { ...s.mergedCells };
+			delete newMergedCells[mergeKey];
+			
+			return {
+				mergedCells: newMergedCells,
+				cells: newCells
+			};
+		});
+	},
+
+	getMergedCell: function(row: number, col: number) {
+		const s = get();
+		for (const mergedCell of Object.values(s.mergedCells || {})) {
+			if (
+				row >= mergedCell.startRow && row <= mergedCell.endRow &&
+				col >= mergedCell.startCol && col <= mergedCell.endCol
+			) {
+				return mergedCell;
+			}
+		}
 		return null;
 	},
-	// 🔀 Luckysheet 风格的合并检测
+
 	isCellMerged: (row: number, col: number) => {
+		const s = get();
+		// 直接在这里实现逻辑，避免循环引用
+		for (const mergedCell of Object.values(s.mergedCells || {})) {
+			if (
+				row >= mergedCell.startRow && row <= mergedCell.endRow &&
+				col >= mergedCell.startCol && col <= mergedCell.endCol
+			) {
+				return true;
+			}
+		}
 		return false;
 	},
+
 }));
 
 // 调试：验证 store 创建
@@ -771,30 +914,6 @@ const functionKeys = Object.keys(testState).filter(key => typeof testState[key] 
 
 // 检查合并相关的属性
 
-// 测试合并功能
-console.log('🧪 测试基础合并功能');
-try {
-  const beforeMerge = testState.mergedCells;
-  console.log('🧪 合并前的状态:', beforeMerge);
-  
-  // 直接测试 mergeCells 方法
-  if (typeof testState.mergeCells === 'function') {
-    testState.mergeCells(0, 0, 0, 1);
-    
-    // 检查状态是否更新
-    setTimeout(() => {
-      const afterMerge = useGridStore.getState().mergedCells;
-      console.log('🧪 合并后的状态:', afterMerge);
-    }, 100);
-  }
-} catch (error) {
-  console.error('🧪 测试合并功能失败:', error);
-}
 
-// 验证函数是否正确存在
-console.log('✅ 函数验证完成');
-console.log('✅ getMergedCell 存在:', typeof testState.getMergedCell === 'function');
-console.log('✅ mergeCells 存在:', typeof testState.mergeCells === 'function');
-console.log('✅ unmergeCells 存在:', typeof testState.unmergeCells === 'function');
 
 

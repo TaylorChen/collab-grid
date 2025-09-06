@@ -7,7 +7,17 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
   const setConnected = useRealtimeStore((s) => s.setConnected);
 
   useEffect(() => {
-    console.log('🔌 useRealtime: 连接中...', { gridId, sheetId, token: !!token });
+    console.log('🔌 useRealtime: 检查Demo模式', { gridId, sheetId, token: !!token });
+    
+    // 在demo模式下，完全跳过WebSocket
+    if (token?.startsWith('demo-token-')) {
+      console.log('🎭 Demo模式：完全禁用WebSocket和实时功能');
+      setConnected(false);
+      return () => {
+        console.log('🎭 Demo模式：cleanup函数（无操作）');
+      };
+    }
+    
     const socket = connectWS(token);
     socket.on("connect", () => {
       console.log('🔌 useRealtime: WebSocket已连接', { gridId, sheetId });
@@ -60,6 +70,22 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
       if (op?.type === "cell:update") {
         const { row, col, value } = op.payload || {};
         useGridStore.getState().setCell(row, col, value);
+        // 气泡提示：展示协作者对该单元格的更新
+        try {
+          const el = document.createElement('div');
+          el.textContent = `单元格 ${String.fromCharCode(65 + (col ?? 0))}${(row ?? 0) + 1} 已更新`;
+          el.style.position = 'fixed';
+          el.style.right = '16px';
+          el.style.bottom = '16px';
+          el.style.background = 'rgba(17,24,39,0.9)';
+          el.style.color = '#fff';
+          el.style.padding = '8px 12px';
+          el.style.borderRadius = '8px';
+          el.style.fontSize = '12px';
+          el.style.zIndex = '9999';
+          document.body.appendChild(el);
+          setTimeout(() => el.remove(), 1800);
+        } catch {}
       } else if (op?.type === "cell:style") {
         const { row, col, style } = op.payload || {};
         if (row != null && col != null && style) useGridStore.getState().setStyle(row, col, style);
@@ -72,6 +98,37 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
         const s = useGridStore.getState();
         if (Array.isArray(rowHeights)) rowHeights.forEach((h: number, i: number) => s.setRowHeight(i, h));
         if (Array.isArray(colWidths)) colWidths.forEach((w: number, i: number) => s.setColWidth(i, w));
+      } else if (op?.type === "grid:row:insert") {
+        const { at, where, count } = op.payload || {};
+        if (typeof at === 'number' && where && typeof count === 'number') {
+          useGridStore.getState().insertRow(at, where, count);
+        }
+      } else if (op?.type === "grid:row:delete") {
+        const { at, count } = op.payload || {};
+        if (typeof at === 'number' && typeof count === 'number') {
+          useGridStore.getState().deleteRow(at, count);
+        }
+      } else if (op?.type === "grid:col:insert") {
+        const { at, where, count } = op.payload || {};
+        if (typeof at === 'number' && where && typeof count === 'number') {
+          useGridStore.getState().insertCol(at, where, count);
+        }
+      } else if (op?.type === "grid:col:delete") {
+        const { at, count } = op.payload || {};
+        if (typeof at === 'number' && typeof count === 'number') {
+          useGridStore.getState().deleteCol(at, count);
+        }
+      } else if (op?.type === "grid:merge:cells") {
+        const { startRow, startCol, endRow, endCol } = op.payload || {};
+        if (typeof startRow === 'number' && typeof startCol === 'number' && 
+            typeof endRow === 'number' && typeof endCol === 'number') {
+          useGridStore.getState().mergeCells(startRow, startCol, endRow, endCol);
+        }
+      } else if (op?.type === "grid:unmerge:cells") {
+        const { startRow, startCol } = op.payload || {};
+        if (typeof startRow === 'number' && typeof startCol === 'number') {
+          useGridStore.getState().unmergeCells(startRow, startCol);
+        }
       }
     });
 
@@ -98,11 +155,17 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
 
   // 当切换 sheet 时，重新加入并等待快照（不立即清空数据）
   useEffect(() => {
+    // Demo模式下跳过sheet切换的WebSocket操作
+    if (token?.startsWith('demo-token-')) {
+      console.log('🎭 Demo模式：跳过sheet切换WebSocket操作');
+      return;
+    }
+    
     const socket = getWS();
     if (socket && socket.connected && sheetId != null) {
       socket.emit("grid:join", { gridId, sheetId });
     }
-  }, [gridId, sheetId]);
+  }, [gridId, sheetId, token]);
 
   return { socket: getWS() };
 }

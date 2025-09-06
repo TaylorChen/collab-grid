@@ -3,6 +3,34 @@ const runtimeProto = typeof window !== "undefined" ? window.location.protocol : 
 const base = import.meta.env.VITE_API_BASE_URL || `${runtimeProto}//${runtimeHost}:4000`;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  // 检查是否是demo模式
+  const authHeader = options.headers?.['Authorization'] as string;
+  const isDemo = authHeader && authHeader.includes('demo-token-');
+  
+  console.log('🔍 API请求分析:', { 
+    path, 
+    authHeader: authHeader?.substring(0, 20) + '...', 
+    isDemo,
+    headers: Object.keys(options.headers || {})
+  });
+  
+  if (isDemo) {
+    console.log('🎭 Demo API调用 - 返回模拟数据:', path);
+    // 返回模拟数据
+    const mockResponse = {
+      success: true,
+      data: path.includes('grids') ? {
+        title: 'Demo Grid',
+        owner_id: 1,
+        userPermission: 'edit',
+        sheets: [{ id: 1, name: 'Sheet1' }]
+      } : {}
+    };
+    return Promise.resolve(mockResponse as T);
+  }
+  
+  console.warn('⚠️ 非Demo模式 - 将调用真实API:', path);
+  
   const res = await fetch(`${base}${path}`, {
     headers: {
       "Content-Type": "application/json",
@@ -16,7 +44,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   
   // 如果是创建Sheet的请求，添加详细调试
   if (path.includes('/sheets') && options.method === 'POST') {
-    console.log('🔍 request函数接收到的原始数据:', {
+    console.log('📋 Sheet创建请求:', {
       path,
       rawData: data,
       dataType: typeof data,

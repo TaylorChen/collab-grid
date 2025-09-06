@@ -5,22 +5,46 @@ import { useGridStore } from "@/stores/gridStore";
 export function useRealtime(gridId, sheetId, token) {
     const setConnected = useRealtimeStore((s) => s.setConnected);
     useEffect(() => {
+        console.log('🔌 useRealtime: 检查Demo模式', { gridId, sheetId, token: !!token });
+        
+        // 在demo模式下，完全跳过WebSocket
+        if (token?.startsWith('demo-token-')) {
+            console.log('🎭 Demo模式：完全禁用WebSocket和实时功能');
+            setConnected(false);
+            return () => {
+                console.log('🎭 Demo模式：cleanup函数（无操作）');
+            };
+        }
+        
         const socket = connectWS(token);
         socket.on("connect", () => {
+            console.log('🔌 useRealtime: WebSocket已连接', { gridId, sheetId });
             setConnected(true);
             if (sheetId != null) {
+                console.log('🔌 useRealtime: 准备设置activeSheet...', { sheetId });
                 useGridStore.getState().setActiveSheet(sheetId);
             }
+            console.log('🔌 useRealtime: 发送grid:join...', { gridId, sheetId });
             socket.emit("grid:join", { gridId, sheetId });
         });
         socket.on("disconnect", () => setConnected(false));
         socket.on("grid:snapshot", (snap) => {
+            console.log('📊 收到grid:snapshot:', {
+                rows: snap.rows,
+                cols: snap.cols,
+                rowHeights: snap.rowHeights?.length,
+                colWidths: snap.colWidths?.length,
+                sheetId
+            });
             useGridStore.getState().reset(snap.rows, snap.cols);
             if (sheetId != null && typeof sheetId === 'number') {
-                if (Array.isArray(snap.rowHeights))
+                if (Array.isArray(snap.rowHeights)) {
                     useGridStore.getState().setAllRowHeights(sheetId, snap.rowHeights);
-                if (Array.isArray(snap.colWidths))
+                }
+                if (Array.isArray(snap.colWidths)) {
                     useGridStore.getState().setAllColWidths(sheetId, snap.colWidths);
+                }
+                // 无论如何都要调用setActiveSheet，它会确保有默认的colWidths
                 useGridStore.getState().setActiveSheet(sheetId);
             }
             else {
@@ -69,6 +93,43 @@ export function useRealtime(gridId, sheetId, token) {
                 if (Array.isArray(colWidths))
                     colWidths.forEach((w, i) => s.setColWidth(i, w));
             }
+            else if (op?.type === "grid:row:insert") {
+                const { at, where, count } = op.payload || {};
+                if (typeof at === 'number' && where && typeof count === 'number') {
+                    useGridStore.getState().insertRow(at, where, count);
+                }
+            }
+            else if (op?.type === "grid:row:delete") {
+                const { at, count } = op.payload || {};
+                if (typeof at === 'number' && typeof count === 'number') {
+                    useGridStore.getState().deleteRow(at, count);
+                }
+            }
+            else if (op?.type === "grid:col:insert") {
+                const { at, where, count } = op.payload || {};
+                if (typeof at === 'number' && where && typeof count === 'number') {
+                    useGridStore.getState().insertCol(at, where, count);
+                }
+            }
+            else if (op?.type === "grid:col:delete") {
+                const { at, count } = op.payload || {};
+                if (typeof at === 'number' && typeof count === 'number') {
+                    useGridStore.getState().deleteCol(at, count);
+                }
+            }
+            else if (op?.type === "grid:merge:cells") {
+                const { startRow, startCol, endRow, endCol } = op.payload || {};
+                if (typeof startRow === 'number' && typeof startCol === 'number' &&
+                    typeof endRow === 'number' && typeof endCol === 'number') {
+                    useGridStore.getState().mergeCells(startRow, startCol, endRow, endCol);
+                }
+            }
+            else if (op?.type === "grid:unmerge:cells") {
+                const { startRow, startCol } = op.payload || {};
+                if (typeof startRow === 'number' && typeof startCol === 'number') {
+                    useGridStore.getState().unmergeCells(startRow, startCol);
+                }
+            }
         });
         // presence & lock events
         socket.on("cell:presence", (data) => {
@@ -92,10 +153,16 @@ export function useRealtime(gridId, sheetId, token) {
     }, [gridId, sheetId, setConnected]);
     // 当切换 sheet 时，重新加入并等待快照（不立即清空数据）
     useEffect(() => {
+        // Demo模式下跳过sheet切换的WebSocket操作
+        if (token?.startsWith('demo-token-')) {
+            console.log('🎭 Demo模式：跳过sheet切换WebSocket操作');
+            return;
+        }
+        
         const socket = getWS();
         if (socket && socket.connected && sheetId != null) {
             socket.emit("grid:join", { gridId, sheetId });
         }
-    }, [gridId, sheetId]);
+    }, [gridId, sheetId, token]);
     return { socket: getWS() };
 }

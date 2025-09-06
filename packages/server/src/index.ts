@@ -205,6 +205,18 @@ async function bootstrap() {
         (op as any).sheetId = normalizedSheetId;
         // broadcast first (with normalized sheetId)
         socket.to(String(gridId)).emit("grid:operation", op);
+        
+        // handle merge cells operations (currently just broadcast, future: persist to DB)
+        if (op.type === "grid:merge:cells") {
+          const { startRow, startCol, endRow, endCol } = op.payload || {};
+          console.log('📎 合并单元格:', { startRow, startCol, endRow, endCol, gridId });
+          // Future: store merge info in database
+        }
+        if (op.type === "grid:unmerge:cells") {
+          const { startRow, startCol } = op.payload || {};
+          console.log('📎 取消合并单元格:', { startRow, startCol, gridId });
+          // Future: remove merge info from database  
+        }
         // dimension/resize persistence per sheet
         if (op?.type === "grid:dimension" || op?.type === "grid:resize") {
           try {

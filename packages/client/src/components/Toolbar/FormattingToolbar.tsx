@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useGridStore } from '@/stores/gridStore';
+import { toast } from '@/stores/toastStore';
+import { getWS } from '@/services/websocket';
 
 interface FormattingToolbarProps {
   gridId: string;
@@ -12,11 +14,16 @@ interface FormattingToolbarProps {
  * 格式化工具栏 - Luckysheet风格
  */
 export default function FormattingToolbar({ gridId, sheetId, userPermission, disabled = false }: FormattingToolbarProps) {
-  const { active, styles, setStyle } = useGridStore((s) => ({
-    active: s.active,
-    styles: s.styles || {},
-    setStyle: s.setStyle
-  }));
+  const { active, selection, styles, setStyle, setActive, clearSelection } = useGridStore((s) => {
+    return {
+      active: s.active,
+      selection: s.selection,
+      styles: s.styles || {},
+      setStyle: s.setStyle,
+      setActive: s.setActive,
+      clearSelection: s.clearSelection
+    };
+  });
 
   // 获取当前选中单元格的样式
   const currentStyle = active ? styles[`${active.row}:${active.col}`] : null;
@@ -24,12 +31,16 @@ export default function FormattingToolbar({ gridId, sheetId, userPermission, dis
   // 本地状态
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showBgColorPicker, setShowBgColorPicker] = useState(false);
+  const [showBorderMenu, setShowBorderMenu] = useState(false);
   
   // Refs
   const colorPickerRef = useRef<HTMLDivElement>(null);
   const bgColorPickerRef = useRef<HTMLDivElement>(null);
+  const borderMenuRef = useRef<HTMLDivElement>(null);
 
-  // 点击外部关闭颜色选择器
+  // 合并功能已移除，删除相关监听
+
+  // 点击外部关闭颜色选择器和边框菜单
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (colorPickerRef.current && !colorPickerRef.current.contains(event.target as Node)) {
@@ -38,19 +49,21 @@ export default function FormattingToolbar({ gridId, sheetId, userPermission, dis
       if (bgColorPickerRef.current && !bgColorPickerRef.current.contains(event.target as Node)) {
         setShowBgColorPicker(false);
       }
+      if (borderMenuRef.current && !borderMenuRef.current.contains(event.target as Node)) {
+        setShowBorderMenu(false);
+      }
     };
 
-    if (showColorPicker || showBgColorPicker) {
+    if (showColorPicker || showBgColorPicker || showBorderMenu) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [showColorPicker, showBgColorPicker]);
+  }, [showColorPicker, showBgColorPicker, showBorderMenu]);
 
   // 应用样式
   const applyStyle = (styleUpdate: any) => {
     if (!active || disabled) return;
     setStyle(active.row, active.col, styleUpdate);
-    console.log('🎨 应用样式:', styleUpdate, '到单元格:', active);
   };
 
   // 切换粗体
@@ -76,6 +89,49 @@ export default function FormattingToolbar({ gridId, sheetId, userPermission, dis
   // 设置对齐方式
   const setAlign = (align: 'left' | 'center' | 'right') => {
     applyStyle({ align });
+  };
+
+  // 合并功能已移除
+
+  // 合并相关辅助函数已移除
+
+  // 设置边框
+  const setBorder = (side: 'top' | 'right' | 'bottom' | 'left' | 'all' | 'none', color: string = '#000000', width: string = '1px') => {
+    if (!active) return;
+    
+    const borderStyle = `${width} solid ${color}`;
+    let borderUpdate: any = {};
+    
+    if (side === 'all') {
+      borderUpdate = {
+        border: {
+          top: borderStyle,
+          right: borderStyle,
+          bottom: borderStyle,
+          left: borderStyle
+        }
+      };
+    } else if (side === 'none') {
+      borderUpdate = {
+        border: {
+          top: 'none',
+          right: 'none',
+          bottom: 'none',
+          left: 'none'
+        }
+      };
+    } else {
+      const currentBorder = currentStyle?.border || {};
+      borderUpdate = {
+        border: {
+          ...currentBorder,
+          [side]: borderStyle
+        }
+      };
+    }
+    
+    applyStyle(borderUpdate);
+    toast.success(`已设置${side === 'all' ? '全部' : side === 'none' ? '无' : side}边框`, 2000);
   };
 
   // 设置文字颜色
@@ -267,21 +323,87 @@ export default function FormattingToolbar({ gridId, sheetId, userPermission, dis
       {/* 分割线 */}
       <div className="w-px h-6 bg-gray-300 mx-1"></div>
 
-      {/* 边框按钮（预留） */}
-      <button
-        className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100"
-        title="边框"
-      >
-        <span className="text-xs">⊞</span>
-      </button>
+      {/* 边框按钮 */}
+      <div className="relative">
+        <button
+          className={`w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 ${
+            showBorderMenu ? 'bg-blue-100' : ''
+          }`}
+          title="边框"
+          onClick={() => setShowBorderMenu(!showBorderMenu)}
+          disabled={disabled}
+        >
+          <span className="text-xs">⊞</span>
+        </button>
 
-      {/* 合并单元格（预留） */}
-      <button
-        className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100"
-        title="合并单元格"
-      >
-        <span className="text-xs">⊕</span>
-      </button>
+        {showBorderMenu && (
+          <div ref={borderMenuRef} className="absolute top-full left-0 mt-1 bg-white border border-gray-300 rounded shadow-lg py-1 z-50 min-w-[140px]">
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('all');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⊞</span>
+              <span className="text-sm">全部边框</span>
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('none');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⊡</span>
+              <span className="text-sm">无边框</span>
+            </button>
+            <div className="border-t border-gray-100 my-1"></div>
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('top');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⊤</span>
+              <span className="text-sm">上边框</span>
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('bottom');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⊥</span>
+              <span className="text-sm">下边框</span>
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('left');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⟫</span>
+              <span className="text-sm">左边框</span>
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left hover:bg-gray-100 flex items-center gap-2"
+              onClick={() => {
+                setBorder('right');
+                setShowBorderMenu(false);
+              }}
+            >
+              <span className="text-xs">⟪</span>
+              <span className="text-sm">右边框</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 合并单元格按钮已移除 */}
 
       {/* 当前选中信息 */}
       <div className="ml-auto flex items-center gap-2 text-sm text-gray-600">
