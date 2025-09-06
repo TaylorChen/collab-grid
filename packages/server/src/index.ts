@@ -226,7 +226,7 @@ async function bootstrap() {
             // step1: ensure row exists with defaults, avoids NOT NULL error on first write
             await dbm.execute(
               "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, ?, ?)",
-              [effectiveSheetId, DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS]
+              [sheetId || null, DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS]
             );
             // step2: update only provided fields; do not overwrite others
             await dbm.execute(

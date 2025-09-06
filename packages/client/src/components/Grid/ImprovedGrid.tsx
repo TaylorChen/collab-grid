@@ -141,11 +141,15 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   const mainCanvasRef = useRef<HTMLCanvasElement>(null);
   const colHeaderCanvasRef = useRef<HTMLCanvasElement>(null);
   const rowHeaderCanvasRef = useRef<HTMLCanvasElement>(null);
+  const colHeaderCursorRef = useRef<string>('default');
+  const rowHeaderCursorRef = useRef<string>('default');
+  const [resizing, setResizing] = useState<{ mode: 'col' | 'row'; index: number; startPos: number; startSize: number } | null>(null);
   
   // Store state
   const { 
     rows, cols, cells, styles, rowHeights, colWidths, active, selection,
     freezeRows, freezeCols, setCell, setActive, clearSelection,
+    setRowHeight, setColWidth,
     undo, redo, canUndo, canRedo, history, historyIndex, mergedCells, getMergedCell, getCellDisplayValue,
     mergeCells, unmergeCells
   } = useGridStore((s: any) => {
@@ -156,6 +160,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     active: s.active, selection: s.selection,
     freezeRows: s.freezeRows ?? 0, freezeCols: s.freezeCols ?? 0,
     setCell: s.setCell, setActive: s.setActive, 
+    setRowHeight: s.setRowHeight, setColWidth: s.setColWidth,
     clearSelection: s.clearSelection || (() => {}), // 添加默认函数防止错误
     undo: s.undo, redo: s.redo, canUndo: s.canUndo, canRedo: s.canRedo,
       history: s.history || [], historyIndex: s.historyIndex ?? -1,
@@ -421,6 +426,28 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     ctx.stroke();
     
   }, [scroll.left, containerSize.width, colWidths, cols, freezeCols]);
+
+  // Header edge helpers
+  const findColEdgeNear = (x: number, tolerance = 4): number | null => {
+    let acc = 0;
+    for (let c = 0; c < cols; c++) {
+      const cw = colWidths[c] ?? CELL_W;
+      const edge = acc + cw;
+      if (Math.abs(edge - x) <= tolerance) return c;
+      acc += cw;
+    }
+    return null;
+  };
+  const findRowEdgeNear = (y: number, tolerance = 3): number | null => {
+    let acc = 0;
+    for (let r = 0; r < rows; r++) {
+      const rh = rowHeights[r] ?? CELL_H;
+      const edge = acc + rh;
+      if (Math.abs(edge - y) <= tolerance) return r;
+      acc += rh;
+    }
+    return null;
+  };
   
   // 渲染行标题
   useEffect(() => {
@@ -803,6 +830,51 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     }
     
   }, [cells, styles, colWidths, rowHeights, rows, cols, totalWidth, totalHeight, selection, active, isDragging, dragStart, dragEnd, mergedCells]);
+
+  // Global move/up handlers for resizing
+  // Throttled broadcast during drag for real-time preview on peers
+  let lastEmit = 0;
+  const onGlobalMouseMove = (ev: MouseEvent) => {
+    if (!resizing) return;
+    if (resizing.mode === 'col') {
+      const delta = ev.clientX - resizing.startPos;
+      const next = Math.max(32, resizing.startSize + delta);
+      setColWidth(resizing.index, next);
+      const now = Date.now();
+      if (now - lastEmit > 100) {
+        lastEmit = now;
+        try { getWS()?.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { colWidths } }); } catch {}
+      }
+    } else {
+      const delta = ev.clientY - resizing.startPos;
+      const next = Math.max(18, resizing.startSize + delta);
+      setRowHeight(resizing.index, next);
+      const now = Date.now();
+      if (now - lastEmit > 100) {
+        lastEmit = now;
+        try { getWS()?.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { rowHeights } }); } catch {}
+      }
+    }
+  };
+  const onGlobalMouseUp = () => {
+    if (!resizing) return;
+    try {
+      const socket = getWS();
+      if (socket) {
+        // 广播完整布局，确保他端同步且服务端可持久化
+        socket.emit('grid:operation', {
+          id: crypto.randomUUID?.() || String(Date.now()),
+          gridId,
+          sheetId,
+          type: 'grid:resize',
+          payload: { rows, cols, rowHeights, colWidths }
+        });
+      }
+    } catch {}
+    setResizing(null);
+    window.removeEventListener('mousemove', onGlobalMouseMove);
+    window.removeEventListener('mouseup', onGlobalMouseUp);
+  };
 
   
   // 获取鼠标位置对应的行列
@@ -1514,6 +1586,23 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           right: 0,
           height: HEADER_H,
         }}
+        onMouseMove={(e) => {
+          if (resizing?.mode === 'col') return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX - rect.left + scroll.left;
+          const edge = findColEdgeNear(x);
+          e.currentTarget.style.cursor = edge != null ? 'col-resize' : 'default';
+        }}
+        onMouseDown={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX - rect.left + scroll.left;
+          const edge = findColEdgeNear(x);
+          if (edge == null) return;
+          setResizing({ mode: 'col', index: edge, startPos: e.clientX, startSize: colWidths[edge] ?? CELL_W });
+          window.addEventListener('mousemove', onGlobalMouseMove);
+          window.addEventListener('mouseup', onGlobalMouseUp);
+          e.preventDefault();
+        }}
       />
       
       {/* 固定行头 */}
@@ -1525,6 +1614,23 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           left: 0,
           bottom: 0,
           width: HEADER_W,
+        }}
+        onMouseMove={(e) => {
+          if (resizing?.mode === 'row') return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const y = e.clientY - rect.top + scroll.top;
+          const edge = findRowEdgeNear(y);
+          e.currentTarget.style.cursor = edge != null ? 'row-resize' : 'default';
+        }}
+        onMouseDown={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const y = e.clientY - rect.top + scroll.top;
+          const edge = findRowEdgeNear(y);
+          if (edge == null) return;
+          setResizing({ mode: 'row', index: edge, startPos: e.clientY, startSize: rowHeights[edge] ?? CELL_H });
+          window.addEventListener('mousemove', onGlobalMouseMove);
+          window.addEventListener('mouseup', onGlobalMouseUp);
+          e.preventDefault();
         }}
       />
       

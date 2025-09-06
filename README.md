@@ -7,9 +7,11 @@ An open-source, real-time collaborative spreadsheet web app built as a monorepo.
 - Canvas-based grid engine for high-performance rendering
 - Per-cell formatting (bold, alignment, text/background color, font size)
 - Multiple sheet tabs per grid with per-sheet row/column sizes and layout persistence
-- Presence indicators and cell locking with non-blocking conflict bubbles showing actual nicknames
+- Presence indicators and per-cell locking with conflict prompts and presence bubbles
 - Auth (register/login/JWT), personal grid creation, share with collaborators (owner-only invite), owner-only delete
 - Responsive UI with Tailwind CSS + Headless UI
+- Right-click (context menu) on cells for common actions and formatting
+- Demo Mode for local UI exploration without backend (see below)
 
 ## Monorepo Structure
 ```
@@ -34,13 +36,25 @@ collab-grid/
 - Auth: register, login, JWT session; change display name/password
 - Grid: create/list/get/delete/rename
 - Sheets: create/list/rename/delete, default layout on create
-- Realtime: cell update/style, grid resize/dimension, presence (colored dots), cell lock acquire/renew/release
+- Realtime: cell update/style, grid resize/dimension, presence (colored dots), per‑cell lock acquire/renew/release
 - Formatting: bold, align left/center/right, text color, background color, font size
-- Layout: drag to resize row height and column width per sheet; persistence to MySQL
+- Layout: drag to resize row height and column width per sheet; real‑time broadcast; persistence to MySQL
 - Multi-line cell input: Shift+Enter for newline, Enter to submit
 - Ownership and sharing: owner can invite collaborators; collaborators cannot delete or invite others
 - List metadata: creation time, last modified, last editor (nickname)
 - CORS: dynamic origin reflection for local IPs; client/WS URLs auto-derive from current host
+- Context menu: copy, cut, paste, basic formatting, insert/delete row/col, and more
+- Collaboration UX:
+  - Single editor per cell (locking). Others get a refusal toast if they try to edit.
+  - Presence bubble near the active/edited cell shows “N people also here” or the collaborator’s name.
+  - Update bubble/toast appears when a cell is changed by someone else.
+
+## Demo Mode
+- If no token is present, the client auto‑sets a `demo-token-*` and runs in Demo Mode.
+- Demo Mode behavior:
+  - API calls short‑circuit with mock data (no server writes).
+  - WebSocket (realtime/locks/presence/persistence) is disabled.
+  - Use for quick UI preview only. For full realtime + persistence, log in normally.
 
 ## Prerequisites
 - Node.js >= 18
@@ -82,7 +96,10 @@ npm run dev:client
 6) Login & test
 - Login at `http://localhost:5173/login`
 - Create a grid, rename it, edit cells with formatting, add sheets
-- Open two browsers (or two accounts) to test real-time presence and locking
+- Open two browsers (or two accounts) to test:
+  - Presence/locking: A starts editing A1; B tries to edit A1 gets a lock warning. A’s cell shows presence bubble if B is also focused there.
+  - Realtime update bubble: A edits A1; B sees a short toast “单元格 A1 已更新”.
+  - Row/Col resize: drag headers in A; B sees sizes update in real time; refresh either page and sizes persist.
 
 ## Quick Start (Docker Compose)
 This spins up MySQL, Redis, MinIO (reserved), server, and client.
@@ -131,7 +148,7 @@ Notes:
   - `cell:update` { row, col, value }
   - `cell:style` { row, col, style }
   - `grid:dimension` { rows?, cols? }
-  - `grid:resize` { rowHeights?, colWidths? }
+  - `grid:resize` { rows?, cols?, rowHeights?, colWidths? }
 - Presence
   - `cell:focus` / `cell:blur`
 - Lock
@@ -143,12 +160,16 @@ Notes:
 - Row/column sizes are stored per-sheet in MySQL table `grid_sheet_layout`.
 - Cell values and styles are stored in `grid_cells` (per `grid_id`, `sheet_id`, `row_index`, `col_index`).
 - Last modified and last editor are tracked in `grids.last_modified` and `grids.last_editor_id`.
+ - The server persists sizes on `grid:operation` with type `grid:resize`/`grid:dimension` and broadcasts fresh snapshots as needed.
 
 ## Troubleshooting
 - Port already in use (4000): kill the process or use `npx kill-port 4000`.
 - CORS errors on LAN: ensure server CORS reflects origin (already configured), and client uses LAN IP.
 - MySQL keyword issues: columns `rows`/`cols` are backticked; ensure your MySQL is 8.x and schema up to date.
-- Layout not persisting: confirm `grid:operation` payload contains `sheetId`, and `grid_sheet_layout` has a row for the `sheet_id`.
+- Layout not persisting:
+  - Ensure you are NOT in Demo Mode (login required for persistence/realtime).
+  - Confirm `grid:operation` payload contains a valid `sheetId` and the server logs don’t show authorization issues.
+  - Verify MySQL/Redis are running; table `grid_sheet_layout` should contain a row for the sheet.
 - Nicknames not showing: ensure clients pass JWT in WS auth; Redis directory keys are `grid:{gridId}:user:{userId}`.
 
 ## License
