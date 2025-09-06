@@ -149,6 +149,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   const { 
     rows, cols, cells, styles, rowHeights, colWidths, active, selection,
     freezeRows, freezeCols, setCell, setActive, clearSelection,
+    filters, sortSpec,
+    setSort, clearSort, setFilter, clearFilter,
     setRowHeight, setColWidth,
     undo, redo, canUndo, canRedo, history, historyIndex, mergedCells, getMergedCell, getCellDisplayValue,
     mergeCells, unmergeCells
@@ -161,6 +163,8 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     freezeRows: s.freezeRows ?? 0, freezeCols: s.freezeCols ?? 0,
     setCell: s.setCell, setActive: s.setActive, 
     setRowHeight: s.setRowHeight, setColWidth: s.setColWidth,
+    filters: s.filters || {}, sortSpec: s.sortSpec,
+    setSort: s.setSort, clearSort: s.clearSort, setFilter: s.setFilter, clearFilter: s.clearFilter,
     clearSelection: s.clearSelection || (() => {}), // 添加默认函数防止错误
     undo: s.undo, redo: s.redo, canUndo: s.canUndo, canRedo: s.canRedo,
       history: s.history || [], historyIndex: s.historyIndex ?? -1,
@@ -192,6 +196,13 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ row: number; col: number } | null>(null);
   const [dragEnd, setDragEnd] = useState<{ row: number; col: number } | null>(null);
+  const [headerMenu, setHeaderMenu] = useState<{
+    col: number;
+    left: number;
+    top: number;
+    search: string;
+  } | null>(null);
+  const headerInputRef = useRef<HTMLInputElement>(null);
 
   // 组件卸载时清理锁
   useEffect(() => {
@@ -201,6 +212,28 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       }
     };
   }, []);
+
+  // 点击外部关闭列头筛选面板
+  useEffect(() => {
+    if (!headerMenu) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      // 简单判断：如果点击在面板外则关闭
+      if (target && !target.closest?.('#col-filter-popover')) {
+        setHeaderMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [headerMenu]);
+
+  // 打开面板时聚焦输入框（仅在打开时聚焦一次）
+  useEffect(() => {
+    if (headerMenu && headerInputRef.current) {
+      headerInputRef.current.focus();
+      headerInputRef.current.select?.();
+    }
+  }, [headerMenu?.col]);
 
   // 向服务器广播当前激活单元格的存在（presence），帮助其他协作者知晓多人关注/操作同一格
   useEffect(() => {
@@ -281,7 +314,12 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     const container = containerRef.current;
     if (!container) return;
     
-    const handleContainerClick = () => {
+    const handleContainerClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest && target.closest('#col-filter-popover')) {
+        // 点击在筛选面板内，不把焦点切回画布
+        return;
+      }
       const canvas = mainCanvasRef.current;
       if (canvas) canvas.focus();
     };
@@ -407,6 +445,18 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const label = getColName(c);
       const tw = ctx.measureText(label).width;
       ctx.fillText(label, x + cw / 2 - tw / 2, h / 2);
+
+      // 筛选指示（若该列启用了筛选）
+      try {
+        const q = (filters as any)?.[c];
+        if (q) {
+          ctx.fillStyle = '#2563eb';
+          ctx.font = '10px system-ui';
+          ctx.fillText('⎘', x + cw - 12, h / 2); // 小图标提示有筛选
+          ctx.fillStyle = '#374151';
+          ctx.font = '12px system-ui';
+        }
+      } catch {}
       
       // 边框
       ctx.beginPath();
@@ -425,7 +475,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     ctx.lineTo(w, h - 1);
     ctx.stroke();
     
-  }, [scroll.left, containerSize.width, colWidths, cols, freezeCols]);
+  }, [scroll.left, containerSize.width, colWidths, cols, freezeCols, filters]);
 
   // Header edge helpers
   const findColEdgeNear = (x: number, tolerance = 4): number | null => {
@@ -570,7 +620,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     
     ctx.clearRect(0, 0, totalWidth, totalHeight);
     
-    // 渲染网格和内容
+    // 渲染网格和内容（虚拟化：仅绘制可视范围 + 少量缓冲）
     ctx.strokeStyle = '#e5e7eb';
     ctx.fillStyle = '#000';
     ctx.font = '12px system-ui';
@@ -579,16 +629,69 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
     // 记录跳过的单元格（被合并的单元格）
     const skippedCells = new Set<string>();
     
+    // 排序（视图层，不改真实数据，先支持单列）
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const sortCol: number | null = (sortSpec as any)?.col ?? null;
+    const sortAsc: boolean = (sortSpec as any)?.asc ?? true;
+    const rowOrder: number[] = Array.from({ length: rows }, (_, i) => i);
+    if (sortCol != null && sortCol >= 0 && sortCol < cols) {
+      rowOrder.sort((a, b) => {
+        const va = getCellDisplayValue ? getCellDisplayValue(a, sortCol) : cells[`${a}:${sortCol}`];
+        const vb = getCellDisplayValue ? getCellDisplayValue(b, sortCol) : cells[`${b}:${sortCol}`];
+        const sa = va == null ? '' : String(va);
+        const sb = vb == null ? '' : String(vb);
+        const cmp = collator.compare(sa, sb);
+        return sortAsc ? cmp : -cmp;
+      });
+    }
 
-    
-    let y = 0;
-    for (let r = 0; r < rows; r++) {
-      const rh = rowHeights[r] ?? CELL_H;
-      let x = 0;
+    // 计算可视窗口范围
+    const viewLeft = scroll.left;
+    const viewTop = scroll.top;
+    const viewRight = scroll.left + Math.max(0, (containerSize.width - HEADER_W));
+    const viewBottom = scroll.top + Math.max(0, (containerSize.height - HEADER_H));
+
+    // 起始行/列与偏移
+    let startRow = 0; let y0 = 0; let topSkip = viewTop;
+    while (startRow < rows && topSkip > 0) {
+      const phys = rowOrder[startRow];
+      const h = (rowHeights[phys] ?? CELL_H);
+      if (topSkip < h) break; topSkip -= h; y0 += h; startRow++;
+    }
+    let startCol = 0; let x0Base = 0; let leftSkip = viewLeft;
+    while (startCol < cols && leftSkip > 0) {
+      const w = colWidths[startCol] ?? CELL_W;
+      if (leftSkip < w) break; leftSkip -= w; x0Base += w; startCol++;
+    }
+    const extraRows = 2, extraCols = 2;
+    // 结束行/列
+    let endRow = startRow, accY = y0;
+    while (endRow < rows && accY < viewBottom + extraRows * CELL_H) {
+      const phys = rowOrder[endRow];
+      accY += (rowHeights[phys] ?? CELL_H);
+      endRow++;
+    }
+    let endCol = startCol, accX = x0Base;
+    while (endCol < cols && accX < viewRight + extraCols * CELL_W) { accX += (colWidths[endCol] ?? CELL_W); endCol++; }
+
+    let y = y0;
+    for (let r = startRow; r < endRow; r++) {
+      const physRow = rowOrder[r];
+      const rh = (rowHeights[physRow] ?? CELL_H);
+      let x = x0Base;
+      // 行级筛选：若任一启用的列筛选不匹配，则整行淡显
+      let rowMatched = true;
+      const fEntries = Object.entries(filters || {});
+      for (const [k, q] of fEntries) {
+        const cIdx = Number(k);
+        if (!q) continue;
+        const v = getCellDisplayValue ? getCellDisplayValue(physRow, cIdx) : cells[`${physRow}:${cIdx}`];
+        if (!(v != null && String(v).indexOf(String(q)) !== -1)) { rowMatched = false; break; }
+      }
       
-      for (let c = 0; c < cols; c++) {
+      for (let c = startCol; c < endCol; c++) {
         const cw = colWidths[c] ?? CELL_W;
-        const cellKey = `${r}:${c}`;
+        const cellKey = `${physRow}:${c}`;
         
         // 检查是否在合并区域内但不是左上角单元格
         if (skippedCells.has(cellKey)) {
@@ -616,9 +719,9 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
         
         
         
-        // 内容和样式
-        // 🔀 使用 getCellDisplayValue 确保获取正确的值（考虑合并单元格）
-        const value = getCellDisplayValue ? getCellDisplayValue(r, c) : cells[cellKey];
+        // 内容和样式（应用基础筛选：包含匹配）
+        const value = getCellDisplayValue ? getCellDisplayValue(physRow, c) : cells[cellKey];
+        ctx.globalAlpha = rowMatched ? 1 : 0.18;
         const style = styles[cellKey];
         
         // 应用背景色
@@ -734,7 +837,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           ctx.restore();
         }
         
-        x += cw;
+        x += cw; ctx.globalAlpha = 1;
       }
       y += rh;
     }
@@ -829,7 +932,28 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       ctx.restore();
     }
     
-  }, [cells, styles, colWidths, rowHeights, rows, cols, totalWidth, totalHeight, selection, active, isDragging, dragStart, dragEnd, mergedCells]);
+  }, [
+    cells,
+    styles,
+    colWidths,
+    rowHeights,
+    rows,
+    cols,
+    totalWidth,
+    totalHeight,
+    selection,
+    active,
+    isDragging,
+    dragStart,
+    dragEnd,
+    mergedCells,
+    scroll.left,
+    scroll.top,
+    containerSize.width,
+    containerSize.height,
+    freezeRows,
+    freezeCols,
+  ]);
 
   // Global move/up handlers for resizing
   // Throttled broadcast during drag for real-time preview on peers
@@ -1621,6 +1745,41 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           right: 0,
           height: HEADER_H,
         }}
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX - rect.left + scroll.left;
+          let col = 0, sum = 0;
+          while (col < cols && sum + (colWidths[col] ?? CELL_W) < x) { sum += (colWidths[col] ?? CELL_W); col++; }
+          if (col >= cols) return;
+          const current = (sortSpec as any);
+          // 左侧 70% 区域用于切换排序，右侧 30% 打开筛选
+          const localX = x - sum;
+          const boundary = (colWidths[col] ?? CELL_W) * 0.7;
+          if (localX <= boundary) {
+            if (current?.col === col) {
+              if (current.asc === true) (setSort as any)(col, false);
+              else (clearSort as any)();
+            } else {
+              (setSort as any)(col, true);
+            }
+          } else {
+            const left = rect.left + sum + (colWidths[col] ?? CELL_W) - 20;
+            const top = rect.bottom;
+            setHeaderMenu({ col, left, top, search: '' });
+          }
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX - rect.left + scroll.left;
+          let col = 0, sum = 0;
+          while (col < cols && sum + (colWidths[col] ?? CELL_W) < x) { sum += (colWidths[col] ?? CELL_W); col++; }
+          if (col >= cols) return;
+          // 打开列头下拉面板（代替系统prompt）
+          const left = rect.left + sum + (colWidths[col] ?? CELL_W) - 20;
+          const top = rect.bottom;
+          setHeaderMenu({ col, left, top, search: '' });
+        }}
         onMouseMove={(e) => {
           if (resizing?.mode === 'col') return;
           const rect = e.currentTarget.getBoundingClientRect();
@@ -1638,6 +1797,7 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           window.addEventListener('mouseup', onGlobalMouseUp);
           e.preventDefault();
         }}
+        
       />
       
       {/* 固定行头 */}
@@ -1886,6 +2046,75 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
           sheetId={sheetId}
           userPermission={userPermission}
         />
+      )}
+
+      {/* 列头筛选下拉（Excel风格简版） */}
+      {headerMenu && (
+        <div
+          id="col-filter-popover"
+          className="fixed z-[1000] bg-white border border-gray-300 rounded shadow-md w-64 p-2"
+          style={{ left: headerMenu.left, top: headerMenu.top }}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <input
+              ref={headerInputRef}
+              value={headerMenu.search}
+              onChange={(e) => setHeaderMenu({ ...headerMenu, search: e.target.value })}
+              onKeyDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="搜索唯一值"
+              className="w-full px-2 py-1 text-sm border rounded"
+            />
+            <button
+              className="px-2 py-1 text-xs border rounded"
+              onClick={() => setHeaderMenu({ ...headerMenu, search: '' })}
+            >清空</button>
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <button className="px-2 py-1 text-xs border rounded" onClick={() => (setSort as any)(headerMenu.col, true)}>升序</button>
+            <button className="px-2 py-1 text-xs border rounded" onClick={() => (setSort as any)(headerMenu.col, false)}>降序</button>
+            <button className="px-2 py-1 text-xs border rounded" onClick={() => (clearSort as any)()}>清除排序</button>
+          </div>
+          <div className="max-h-48 overflow-auto border rounded">
+            {(() => {
+              // 生成唯一值（取前几千行抽样以控成本）
+              const col = headerMenu.col;
+              const limit = Math.min(rows, 5000);
+              const set = new Set<string>();
+              for (let r = 0; r < limit; r++) {
+                const v = getCellDisplayValue ? getCellDisplayValue(r, col) : cells[`${r}:${col}`];
+                const s = v == null ? '' : String(v);
+                if (!headerMenu.search || s.includes(headerMenu.search)) set.add(s);
+                if (set.size > 2000) break; // 安全上限
+              }
+              const list = Array.from(set).sort();
+              const current = (filters as any)?.[col] || '';
+              return (
+                <div>
+                  <div className="p-1 text-xs text-gray-500">唯一值（前{limit}行抽样）</div>
+                  {list.length === 0 && <div className="p-2 text-sm text-gray-400">无匹配项</div>}
+                  {list.slice(0, 300).map((val) => (
+                    <label key={val} className="flex items-center gap-2 px-2 py-1 text-sm hover:bg-gray-50">
+                      <input
+                        type="radio"
+                        name="filter-value"
+                        checked={current === val}
+                        onChange={() => {
+                          (setFilter as any)(col, val);
+                        }}
+                      />
+                      <span className="truncate" title={val || '(空白)'}>{val || '(空白)'}</span>
+                    </label>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+          <div className="flex justify-between mt-2">
+            <button className="px-3 py-1 text-xs border rounded" onClick={() => (clearFilter as any)(headerMenu.col)}>清除筛选</button>
+            <button className="px-3 py-1 text-xs border rounded" onClick={() => setHeaderMenu(null)}>关闭</button>
+          </div>
+        </div>
       )}
 
     </div>

@@ -101,6 +101,13 @@ interface GridState {
 	setColWidth: (col: number, w: number) => void;
 	setAllRowHeights: (sheetId: number, arr: number[]) => void;
 	setAllColWidths: (sheetId: number, arr: number[]) => void;
+	// 排序与筛选（基础）
+	sortSpec?: { col: number | null; asc: boolean };
+	filters?: Record<number, string | null>;
+	setSort: (col: number | null, asc?: boolean) => void;
+	clearSort: () => void;
+	setFilter: (col: number, query: string | null) => void;
+	clearFilter: (col: number) => void;
 	toggleFreezeTopRow: () => void;
 	toggleFreezeFirstCol: () => void;
 	// 新的冻结函数
@@ -407,6 +414,14 @@ export const useGridStore = create<GridState>((set, get) => ({
 		colWidthsBySheet: { ...s.colWidthsBySheet, [sheetId]: arr.slice() },
 		...(sheetId === s.activeSheetId ? { colWidths: arr.slice() } : {})
 	})),
+
+	// ===== 排序 / 筛选 =====
+	sortSpec: { col: null, asc: true },
+	filters: {},
+	setSort: (col, asc) => set((s) => ({ sortSpec: col == null ? { col: null, asc: true } : { col, asc: asc ?? (s.sortSpec?.col === col ? !s.sortSpec!.asc : true) } })),
+	clearSort: () => set(() => ({ sortSpec: { col: null, asc: true } })),
+	setFilter: (col, query) => set((s) => ({ filters: { ...(s.filters || {}), [col]: (query && query.trim()) ? query.trim() : null } })),
+	clearFilter: (col) => set((s) => { const next = { ...(s.filters || {}) }; delete next[col]; return { filters: next }; }),
 	toggleFreezeTopRow: () => set((s) => ({ 
 		freezeTopRow: !s.freezeTopRow,
 		freezeRows: !s.freezeTopRow ? 1 : 0
