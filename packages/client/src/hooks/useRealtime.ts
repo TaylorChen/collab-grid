@@ -40,6 +40,18 @@ export function useRealtime(gridId: string, sheetId?: number, token?: string) {
       });
       
       useGridStore.getState().reset(snap.rows, snap.cols);
+      // apply local fallback layout if server didn't send sizes
+      try {
+        if ((!Array.isArray(snap.rowHeights) || !Array.isArray(snap.colWidths)) && sheetId != null) {
+          const key = `grid:layout:${gridId}:${sheetId}`;
+          const saved = localStorage.getItem(key);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed.rowHeights)) useGridStore.getState().setAllRowHeights(sheetId, parsed.rowHeights);
+            if (Array.isArray(parsed.colWidths)) useGridStore.getState().setAllColWidths(sheetId, parsed.colWidths);
+          }
+        }
+      } catch {}
       if (sheetId != null && typeof sheetId === 'number') {
         if (Array.isArray(snap.rowHeights)) {
           useGridStore.getState().setAllRowHeights(sheetId, snap.rowHeights);

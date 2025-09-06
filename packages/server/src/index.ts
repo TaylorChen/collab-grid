@@ -122,13 +122,19 @@ async function bootstrap() {
           if (lay) {
             rows = lay.rows ?? rows;
             cols = lay.cols ?? cols;
-            // 解析并验证数组长度
+            // 解析尺寸数组并进行长度修正（不足补默认，多余裁剪），避免因长度不一致而丢弃
             const parsedRowHeights = lay.row_heights ? (()=>{ try { return JSON.parse(lay.row_heights); } catch { return undefined; } })() : undefined;
             const parsedColWidths = lay.col_widths ? (()=>{ try { return JSON.parse(lay.col_widths); } catch { return undefined; } })() : undefined;
-            
-            // 如果解析的数组长度不匹配，使用undefined让客户端使用默认值
-            rowHeights = (Array.isArray(parsedRowHeights) && parsedRowHeights.length === rows) ? parsedRowHeights : undefined;
-            colWidths = (Array.isArray(parsedColWidths) && parsedColWidths.length === cols) ? parsedColWidths : undefined;
+            if (Array.isArray(parsedRowHeights)) {
+              const arr = parsedRowHeights.slice(0, rows);
+              while (arr.length < rows) arr.push(24);
+              rowHeights = arr;
+            }
+            if (Array.isArray(parsedColWidths)) {
+              const arr = parsedColWidths.slice(0, cols);
+              while (arr.length < cols) arr.push(80);
+              colWidths = arr;
+            }
           }
         }
         console.log('📊 发送grid:snapshot:', { rows, cols, rowHeights: rowHeights?.length, colWidths: colWidths?.length });
@@ -223,6 +229,7 @@ async function bootstrap() {
             let sheetId = normalizedSheetId;
             const { rows, cols, rowHeights, colWidths } = op.payload || {};
             const dbm = (await import("./utils/database")).db;
+            // （移除）layout:before 调试日志
             // step1: ensure row exists with defaults, avoids NOT NULL error on first write
             await dbm.execute(
               "INSERT IGNORE INTO grid_sheet_layout (sheet_id, `rows`, `cols`) VALUES (?, ?, ?)",
@@ -239,6 +246,7 @@ async function bootstrap() {
                 sheetId || null
               ]
             );
+            // （移除）layout:after 调试日志
             // removed verbose layout update log
           } catch (e) {
             console.error("[layout:update] failed", e);

@@ -834,6 +834,12 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
   // Global move/up handlers for resizing
   // Throttled broadcast during drag for real-time preview on peers
   let lastEmit = 0;
+  const saveLayoutLocally = () => {
+    try {
+      const key = `grid:layout:${gridId}:${sheetId}`;
+      localStorage.setItem(key, JSON.stringify({ rows, cols, rowHeights, colWidths }));
+    } catch {}
+  };
   const onGlobalMouseMove = (ev: MouseEvent) => {
     if (!resizing) return;
     if (resizing.mode === 'col') {
@@ -843,7 +849,17 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const now = Date.now();
       if (now - lastEmit > 100) {
         lastEmit = now;
-        try { getWS()?.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { colWidths } }); } catch {}
+        try {
+          const s = getWS();
+          if (s) {
+            const state = useGridStore.getState();
+            const latestColWidths = state.colWidths;
+            console.log('📡 实时广播列宽(拖动中):', { gridId, sheetId, col: resizing.index, width: next, len: latestColWidths?.length });
+            s.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { colWidths: latestColWidths } });
+          } else {
+            console.warn('⚠️ WebSocket未连接，无法广播列宽(拖动中)');
+          }
+        } catch {}
       }
     } else {
       const delta = ev.clientY - resizing.startPos;
@@ -852,7 +868,17 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const now = Date.now();
       if (now - lastEmit > 100) {
         lastEmit = now;
-        try { getWS()?.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { rowHeights } }); } catch {}
+        try {
+          const s = getWS();
+          if (s) {
+            const state = useGridStore.getState();
+            const latestRowHeights = state.rowHeights;
+            console.log('📡 实时广播行高(拖动中):', { gridId, sheetId, row: resizing.index, height: next, len: latestRowHeights?.length });
+            s.emit('grid:operation', { id: String(now), gridId, sheetId, type: 'grid:resize', payload: { rowHeights: latestRowHeights } });
+          } else {
+            console.warn('⚠️ WebSocket未连接，无法广播行高(拖动中)');
+          }
+        } catch {}
       }
     }
   };
@@ -862,15 +888,24 @@ export default function ImprovedGrid({ gridId = "demo", sheetId = 0, isProtected
       const socket = getWS();
       if (socket) {
         // 广播完整布局，确保他端同步且服务端可持久化
-        socket.emit('grid:operation', {
+        const state = useGridStore.getState();
+        const finalRows = state.rows;
+        const finalCols = state.cols;
+        const finalRowHeights = state.rowHeights;
+        const finalColWidths = state.colWidths;
+        const payload = {
           id: crypto.randomUUID?.() || String(Date.now()),
           gridId,
           sheetId,
           type: 'grid:resize',
-          payload: { rows, cols, rowHeights, colWidths }
-        });
+          payload: { rows: finalRows, cols: finalCols, rowHeights: finalRowHeights, colWidths: finalColWidths }
+        };
+        console.log('📡 最终提交布局:', { gridId, sheetId, rows: finalRows, cols: finalCols, rowHeightsLen: finalRowHeights.length, colWidthsLen: finalColWidths.length });
+        socket.emit('grid:operation', payload);
       }
     } catch {}
+    // fallback: local persistence for demo/offline
+    saveLayoutLocally();
     setResizing(null);
     window.removeEventListener('mousemove', onGlobalMouseMove);
     window.removeEventListener('mouseup', onGlobalMouseUp);
